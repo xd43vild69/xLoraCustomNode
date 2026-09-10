@@ -11,9 +11,9 @@ import asyncio
 # --- NUEVA API: Leer Metadatos del LoRA en milisegundos ---
 def read_lora_metadata(lora_path):
     if not lora_path or not os.path.exists(lora_path):
-        return "File not found."
+        return "File not found.", ""
     if not lora_path.endswith(".safetensors"):
-        return "Metadata reading is only supported for .safetensors files."
+        return "Metadata reading is only supported for .safetensors files.", ""
 
     try:
         with open(lora_path, "rb") as f:
@@ -25,9 +25,10 @@ def read_lora_metadata(lora_path):
             
             metadata = header.get("__metadata__", {})
             if not metadata:
-                return "No training metadata found in this LoRA."
+                return "No training metadata found in this LoRA.", ""
             
             output = []
+            raw_triggers = ""
             
             # Modelo Base
             base_model = metadata.get("ss_sd_model_name", metadata.get("ss_base_model_version", ""))
@@ -55,33 +56,34 @@ def read_lora_metadata(lora_path):
             alt_triggers = metadata.get("modelspec.trigger_words", metadata.get("ss_tag_frequency_0", ""))
             if alt_triggers and not tags_dict:
                 output.append(f"\n🏷️ Triggers:\n{alt_triggers}")
+                raw_triggers = str(alt_triggers)
             
             # Si extrajimos los tags correctamente, mostrar los Top 15
             if tags_dict:
                 sorted_tags = sorted(tags_dict.items(), key=lambda x: x[1], reverse=True)
-                # Filtramos los top 15 para no saturar la pantalla
                 top_tags = [f"{t}" for t, c in sorted_tags[:15]]
                 output.append("\n🏷️ Top Training Tags:\n" + ", ".join(top_tags))
+                raw_triggers = ", ".join([t for t, c in sorted_tags[:8]])
             
             if not output:
-                return "Metadata exists, but no tags or model info were found."
+                return "Metadata exists, but no tags or model info were found.", ""
 
-            return "\n".join(output)
+            return "\n".join(output), raw_triggers
 
     except Exception as e:
-        return f"Error reading metadata: {str(e)}"
+        return f"Error reading metadata: {str(e)}", ""
 
 @PromptServer.instance.routes.post("/academia/lora_info")
 async def get_lora_info(request):
     data = await request.json()
     lora_name = data.get("name")
     if not lora_name or lora_name == "None":
-        return web.json_response({"info": "No LoRA selected."})
+        return web.json_response({"info": "No LoRA selected.", "triggers": ""})
 
     lora_path = folder_paths.get_full_path("loras", lora_name)
     # Lo ejecutamos en segundo plano para no bloquear ComfyUI
-    info = await asyncio.to_thread(read_lora_metadata, lora_path)
-    return web.json_response({"info": info})
+    info, triggers = await asyncio.to_thread(read_lora_metadata, lora_path)
+    return web.json_response({"info": info, "triggers": triggers})
 
 @PromptServer.instance.routes.get("/academia/lora_list")
 async def get_lora_list(request):
@@ -102,22 +104,48 @@ class AcademiaMultiLoraNode:
             },
             "optional": {
                 "clip": ("CLIP", {"default": None}),
+                "text": ("STRING", {"forceInput": True, "default": "", "tooltip": "Texto opcional (ej: descripcion de accion o entorno) para combinar con los trigger words de los LoRAs activos."}),
             }
         }
 
-    RETURN_TYPES = ("MODEL", "CLIP")
-    RETURN_NAMES = ("MODEL", "CLIP")
+    RETURN_TYPES = ("MODEL", "CLIP", "STRING")
+    RETURN_NAMES = ("MODEL", "CLIP", "text")
+    OUTPUT_TOOLTIPS = (
+        "Modelo resultante con los LoRAs aplicados.",
+        "CLIP resultante con los LoRAs aplicados.",
+        "Texto resultante con los trigger words configurados en este nodo combinados con el texto de entrada."
+    )
     FUNCTION = "apply_loras"
     CATEGORY = "Academia SD"
 
-    def apply_loras(self, model, injection_method, lora_data="[]", clip=None):
+    def apply_loras(self, model, injection_method, lora_data="[]", clip=None, text="", **kwargs):
         try:
-            loras = json.loads(lora_data)
+            data = json.loads(lora_data)
         except:
+            data = []
+
+        if isinstance(data, dict):
+            loras = data.get("loras", [])
+            node_triggers = data.get("triggers", "")
+        elif isinstance(data, list):
+            loras = data
+            node_triggers = ""
+        else:
             loras = []
+            node_triggers = ""
+
+        triggers_str = node_triggers.strip() if isinstance(node_triggers, str) else ""
+        input_text = text.strip() if isinstance(text, str) else ""
+
+        if triggers_str and input_text:
+            final_text = f"{triggers_str}, {input_text}"
+        elif triggers_str:
+            final_text = triggers_str
+        else:
+            final_text = input_text
 
         if not loras:
-            return (model, clip)
+            return (model, clip, final_text)
 
         print(f"[AcademiaSD] Starting Multi-LoRA Injection...")
 
@@ -159,7 +187,7 @@ class AcademiaMultiLoraNode:
             if lora_clip is not None and clip is not None:
                 clip = lora_clip
 
-        return (model, clip)
+        return (model, clip, final_text)
 
 NODE_CLASS_MAPPINGS = {
     "AcademiaSD_MultiLora": AcademiaMultiLoraNode

@@ -26,8 +26,11 @@ app.registerExtension({
             nodeType.prototype.onSerialize = function(o) {
                 if (onSerialize) onSerialize.apply(this, arguments);
                 const dataWidget = this.widgets.find(w => w.name === "lora_data");
-                if (dataWidget && this.loraState) {
-                    dataWidget.value = JSON.stringify(this.loraState);
+                if (dataWidget) {
+                    dataWidget.value = JSON.stringify({
+                        loras: this.loraState || [],
+                        triggers: this.nodeTriggers || ""
+                    });
                 }
             };
 
@@ -37,7 +40,14 @@ app.registerExtension({
                 const dataWidget = this.widgets.find(w => w.name === "lora_data");
                 if (dataWidget && dataWidget.value) {
                     try {
-                        this.loraState = JSON.parse(dataWidget.value);
+                        const parsed = JSON.parse(dataWidget.value);
+                        if (Array.isArray(parsed)) {
+                            this.loraState = parsed;
+                            this.nodeTriggers = "";
+                        } else if (parsed && typeof parsed === "object") {
+                            this.loraState = parsed.loras || [];
+                            this.nodeTriggers = parsed.triggers || "";
+                        }
                     } catch (e) {
                         console.error("[AcademiaSD] Error restoring state:", e);
                     }
@@ -62,13 +72,14 @@ app.registerExtension({
                     this.loraState = [];
                 }
 
-                this.size = [420, 110];
+                this.size = [420, 280];
                 let loraList = [];
 
                 const container = document.createElement("div");
                 container.style.cssText = `
                     width: 100%; display: flex; flex-direction: column; gap: 6px;
                     font-family: sans-serif; box-sizing: border-box; margin-top: 4px;
+                    padding-bottom: 6px;
                 `;
 
                 const style = document.createElement("style");
@@ -96,6 +107,179 @@ app.registerExtension({
                     .asd-step-btn:hover { color: #fff; }
                 `;
                 container.appendChild(style);
+
+                if (this.nodeTriggers === undefined) {
+                    this.nodeTriggers = "";
+                }
+
+                // --- UTILIDADES: PORTAPAPELES E INYECCIÓN ---
+                const copyToClipboard = async (text) => {
+                    if (!text) return false;
+                    // 1. Intentar API moderna de portapapeles si está disponible
+                    if (navigator.clipboard && window.isSecureContext) {
+                        try {
+                            await navigator.clipboard.writeText(text);
+                            return true;
+                        } catch (err) {}
+                    }
+                    // 2. Fallback universal garantizado para HTTP y red local
+                    try {
+                        const ta = document.createElement("textarea");
+                        ta.value = text;
+                        ta.style.position = "fixed";
+                        ta.style.left = "-9999px";
+                        ta.style.top = "-9999px";
+                        ta.style.opacity = "0";
+                        document.body.appendChild(ta);
+                        ta.focus();
+                        ta.select();
+                        const ok = document.execCommand("copy");
+                        document.body.removeChild(ta);
+                        return ok;
+                    } catch (e) {
+                        console.error("[AcademiaSD] Error en fallback de portapapeles:", e);
+                        return false;
+                    }
+                };
+
+                const injectIntoConnectedPrompt = (text) => {
+                    if (!text || !app.graph) return false;
+                    let injected = false;
+                    const clipOutput = _this.outputs?.[1]; // Salida 1 es CLIP
+                    const textOutput = _this.outputs?.[2]; // Salida 2 es text
+                    const linksToCheck = [...(clipOutput?.links || []), ...(textOutput?.links || [])];
+
+                    for (let linkId of linksToCheck) {
+                        const link = app.graph.links?.[linkId];
+                        if (link) {
+                            const targetNode = app.graph.getNodeById(link.target_id);
+                            if (targetNode) {
+                                // 1. Si es un nodo de prompt de AcademiaSD (con custom DOM textarea)
+                                const customTa = targetNode.domWidget?.element?.querySelector(".asd-p-textarea");
+                                const nativeTextWidget = targetNode.widgets?.find(w => w.name === "text");
+                                if (customTa) {
+                                    const current = customTa.value.trim();
+                                    if (!current.includes(text.trim())) {
+                                        customTa.value = current ? `${text.trim()}, ${current}` : text.trim();
+                                        if (nativeTextWidget) nativeTextWidget.value = customTa.value;
+                                        customTa.dispatchEvent(new Event("input"));
+                                    }
+                                    injected = true;
+                                } else if (nativeTextWidget) {
+                                    // 2. Si es un nodo estándar de CLIPTextEncode
+                                    const current = (nativeTextWidget.value || "").trim();
+                                    if (!current.includes(text.trim())) {
+                                        nativeTextWidget.value = current ? `${text.trim()}, ${current}` : text.trim();
+                                    }
+                                    injected = true;
+                                }
+                                targetNode.setDirtyCanvas(true, true);
+                            }
+                        }
+                    }
+                    return injected;
+                };
+
+                // --- SECCIÓN GENERAL DE TRIGGER WORDS (AL INICIO DEL NODO) ---
+                const trigSection = document.createElement("div");
+                trigSection.style.cssText = "display: flex; flex-direction: column; gap: 4px; background: rgba(0,0,0,0.35); border: 1px solid #444; border-radius: 6px; padding: 6px 8px; box-sizing: border-box;";
+
+                const trigHeader = document.createElement("div");
+                trigHeader.style.cssText = "display: flex; justify-content: space-between; align-items: center;";
+
+                const trigLabel = document.createElement("span");
+                trigLabel.innerText = "🏷️ Trigger Words";
+                trigLabel.style.cssText = "color: #ccc; font-size: 11px; font-weight: bold;";
+
+                const trigActions = document.createElement("div");
+                trigActions.style.cssText = "display: flex; gap: 4px; align-items: center;";
+
+                const btnAutoTriggers = document.createElement("button");
+                btnAutoTriggers.type = "button";
+                btnAutoTriggers.innerText = "🪄 Auto";
+                btnAutoTriggers.title = "Extraer tags/triggers del primer LoRA activo";
+                btnAutoTriggers.style.cssText = "cursor: pointer; background: rgba(255,255,255,0.06); color: #aaa; border: 1px solid #444; border-radius: 4px; font-size: 10px; font-weight: bold; padding: 2px 6px; transition: all 0.2s;";
+                btnAutoTriggers.onmouseover = () => { btnAutoTriggers.style.background = "#4a6ee0"; btnAutoTriggers.style.color = "#fff"; };
+                btnAutoTriggers.onmouseout = () => { btnAutoTriggers.style.background = "rgba(255,255,255,0.06)"; btnAutoTriggers.style.color = "#aaa"; };
+
+                const btnCopy = document.createElement("button");
+                btnCopy.type = "button";
+                btnCopy.innerText = "📋 Copiar";
+                btnCopy.title = "Copiar trigger words al portapapeles e inyectar en prompt conectado si existe";
+                btnCopy.style.cssText = "cursor: pointer; background: rgba(74,110,224,0.18); color: #88c0d0; border: 1px solid #4a6ee0; border-radius: 4px; font-size: 10px; font-weight: bold; padding: 2px 8px; transition: all 0.2s;";
+                btnCopy.onmouseover = () => btnCopy.style.background = "rgba(74,110,224,0.35)";
+                btnCopy.onmouseout = () => btnCopy.style.background = "rgba(74,110,224,0.18)";
+
+                trigActions.appendChild(btnAutoTriggers);
+                trigActions.appendChild(btnCopy);
+
+                const txtTriggers = document.createElement("textarea");
+                txtTriggers.placeholder = "Trigger words del personaje o estilo (ej: 1girl, sakura, pink hair)...";
+                txtTriggers.style.cssText = "width: 100%; height: 38px; padding: 4px 6px; border: 1px solid #444; background: #0d0d0d; color: #eee; border-radius: 4px; font-size: 11px; font-family: inherit; resize: none; outline: none; box-sizing: border-box; transition: border-color 0.2s;";
+                txtTriggers.onfocus = () => { txtTriggers.style.borderColor = "#4a6ee0"; };
+                txtTriggers.onblur = () => { txtTriggers.style.borderColor = "#444"; };
+                txtTriggers.value = _this.nodeTriggers || "";
+
+                txtTriggers.addEventListener("input", (e) => {
+                    _this.nodeTriggers = e.target.value;
+                    syncWidget();
+                });
+
+                btnCopy.addEventListener("click", async () => {
+                    const textToCopy = (txtTriggers.value || "").trim();
+                    if (!textToCopy) {
+                        btnCopy.innerText = "⚠️ Vacío";
+                        setTimeout(() => { btnCopy.innerText = "📋 Copiar"; }, 1500);
+                        return;
+                    }
+                    const copied = await copyToClipboard(textToCopy);
+                    const injected = injectIntoConnectedPrompt(textToCopy);
+                    if (copied && injected) {
+                        btnCopy.innerText = "✅ Copiado + Inyectado!";
+                    } else if (copied) {
+                        btnCopy.innerText = "✅ ¡Copiado!";
+                    } else if (injected) {
+                        btnCopy.innerText = "⚡ ¡Inyectado!";
+                    } else {
+                        btnCopy.innerText = "❌ Error";
+                    }
+                    setTimeout(() => { btnCopy.innerText = "📋 Copiar"; }, 1800);
+                });
+
+                btnAutoTriggers.addEventListener("click", async () => {
+                    const firstLora = (_this.loraState || []).find(l => (l.enabled !== false) && l.name && l.name !== "None");
+                    if (!firstLora) {
+                        btnAutoTriggers.innerText = "⚠️ Sin LoRA";
+                        setTimeout(() => { btnAutoTriggers.innerText = "🪄 Auto"; }, 1500);
+                        return;
+                    }
+                    btnAutoTriggers.innerText = "⏳...";
+                    try {
+                        const res = await fetch("/academia/lora_info", {
+                            method: "POST", headers: {"Content-Type": "application/json"},
+                            body: JSON.stringify({name: firstLora.name})
+                        });
+                        const jsonRes = await res.json();
+                        if (jsonRes.triggers) {
+                            txtTriggers.value = jsonRes.triggers;
+                            _this.nodeTriggers = jsonRes.triggers;
+                            syncWidget();
+                            btnAutoTriggers.innerText = "✅ Listo";
+                        } else {
+                            btnAutoTriggers.innerText = "⚠️ Sin tags";
+                        }
+                    } catch (e) {
+                        btnAutoTriggers.innerText = "❌ Error";
+                    } finally {
+                        setTimeout(() => { btnAutoTriggers.innerText = "🪄 Auto"; }, 1500);
+                    }
+                });
+
+                trigHeader.appendChild(trigLabel);
+                trigHeader.appendChild(trigActions);
+                trigSection.appendChild(trigHeader);
+                trigSection.appendChild(txtTriggers);
+                container.appendChild(trigSection);
 
                 const topBar = document.createElement("div");
                 topBar.style.display = "flex"; 
@@ -141,18 +325,24 @@ app.registerExtension({
 
                 const btnAdd = document.createElement("button");
                 btnAdd.innerText = "➕ Add Lora";
-                btnAdd.style.cssText = "cursor: pointer; padding: 4px; background: rgba(255,255,255,0.05); color: #aaa; border: 1px solid #444; border-radius: 6px; font-weight: bold; margin-top: 2px; font-size: 11px; transition: background 0.2s;";
+                btnAdd.style.cssText = "cursor: pointer; padding: 6px; background: rgba(255,255,255,0.05); color: #aaa; border: 1px solid #444; border-radius: 6px; font-weight: bold; margin-top: 4px; font-size: 11px; transition: background 0.2s;";
                 btnAdd.onmouseover = () => btnAdd.style.background = "rgba(255,255,255,0.1)";
                 btnAdd.onmouseout = () => btnAdd.style.background = "rgba(255,255,255,0.05)";
                 container.appendChild(btnAdd);
 
-                const HTML_BASE_HEIGHT = 140; 
-                const ROW_HEIGHT = 38; 
                 const MIN_WIDTH = 420;
+                const ROW_HEIGHT = 40;
 
                 this.computeSize = function(out) {
-                    const numRows = _this.loraState ? _this.loraState.length : 0;
-                    const computedHeight = HTML_BASE_HEIGHT + (numRows * ROW_HEIGHT);
+                    const numRows = _this.loraState ? _this.loraState.length : (_this.rowsContainer ? _this.rowsContainer.children.length : 0);
+                    const slotsCount = Math.max(
+                        _this.inputs ? _this.inputs.length : 3,
+                        _this.outputs ? _this.outputs.length : 3,
+                        1
+                    );
+                    const canvasTopH = 34 + (slotsCount * 22) + 28; // Title (~34px) + slots (3 * 22px) + injection_method widget (~28px)
+                    const staticHtmlH = 152; // Triggers box (~78px) + Toggle All bar (~20px) + Add button (~34px) + gaps/margins (~20px)
+                    const computedHeight = canvasTopH + staticHtmlH + (numRows * ROW_HEIGHT);
                     return [MIN_WIDTH, computedHeight];
                 };
 
@@ -165,14 +355,31 @@ app.registerExtension({
                 };
 
                 const forceResize = () => {
-                    const minSize = _this.computeSize();
-                    _this.setSize([Math.max(_this.size[0], MIN_WIDTH), minSize[1]]);
-                    app.graph.setDirtyCanvas(true, true);
+                    const applySize = () => {
+                        const minSize = _this.computeSize();
+                        const currentW = Math.max(_this.size ? _this.size[0] : 0, MIN_WIDTH);
+                        _this.size[0] = currentW;
+                        _this.size[1] = minSize[1];
+                        if (_this.setSize) {
+                            _this.setSize([currentW, minSize[1]]);
+                        }
+                        app.graph.setDirtyCanvas(true, true);
+                    };
+                    applySize();
+                    setTimeout(applySize, 25);
                 };
 
                 // --- NUEVA ARQUITECTURA DE DATOS REACTIVA ---
                 const syncWidget = () => {
-                    if (dataWidget) dataWidget.value = JSON.stringify(_this.loraState);
+                    if (dataWidget) {
+                        dataWidget.value = JSON.stringify({
+                            loras: _this.loraState || [],
+                            triggers: _this.nodeTriggers || ""
+                        });
+                    }
+                    if (_this.properties) {
+                        _this.properties.triggers = _this.nodeTriggers || "";
+                    }
                     app.graph.setDirtyCanvas(true, false);
                 };
 
@@ -254,6 +461,9 @@ app.registerExtension({
                 };
 
                 this.renderUI = () => {
+                    if (txtTriggers && txtTriggers.value !== (_this.nodeTriggers || "")) {
+                        txtTriggers.value = _this.nodeTriggers || "";
+                    }
                     _this.rowsContainer.innerHTML = "";
 
                     _this.loraState.forEach((item, idx) => {
@@ -480,8 +690,15 @@ app.registerExtension({
                     if (dataWidget && dataWidget.value) {
                         try {
                             const savedData = JSON.parse(dataWidget.value);
-                            if (savedData.length > 0) {
+                            if (Array.isArray(savedData)) {
                                 _this.loraState = savedData;
+                                _this.nodeTriggers = "";
+                            } else if (savedData && typeof savedData === "object") {
+                                _this.loraState = savedData.loras || [];
+                                _this.nodeTriggers = savedData.triggers || "";
+                            }
+                            if (txtTriggers) {
+                                txtTriggers.value = _this.nodeTriggers || "";
                             }
                         } catch (e) {}
                     }
