@@ -1,11 +1,11 @@
 {
-  "name": "comfyui_AcademiaSD",
-  "version": "1.9.7",
-  "description": "Custom nodes and utilities for ComfyUI by AcademiaSD",
-  "author": "AcademiaSD",
+  "name": "xLoraCustomNode",
+  "version": "1.0.0",
+  "description": "Custom Multi-LoRA node for ComfyUI with generic triggers and dynamic UI",
+  "author": "xd43vild69",
   "license": "MIT",
-  "homepage": "https://github.com/AcademiaSD/comfyui_AcademiaSD",
-  "update_url": "https://github.com/AcademiaSD/comfyui_AcademiaSD/archive/refs/heads/main.zip"
+  "homepage": "https://github.com/xd43vild69/xLoraCustomNode",
+  "repository": "https://github.com/xd43vild69/xLoraCustomNode"
 }
 
 

@@ -1,0 +1,62 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+env/
+venv/
+.venv/
+ENV/
+
+# ComfyUI Models, checkpoints, LoRAs & weights
+*.safetensors
+*.ckpt
+*.pt
+*.bin
+*.onnx
+*.engine
+
+# Non-code assets, media & archives
+assets/
+example_workflows/
+prompt_lists/
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.gif
+*.bmp
+*.ico
+*.mp4
+*.webm
+*.zip
+*.tar
+*.gz
+*.7z
+*.rar
+*.bat
+*.exe
+
+# OS generated files & AppleDouble
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE & Editor files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+
+# Logs & temp
+*.log
+*.tmp
