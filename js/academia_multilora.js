@@ -17,6 +17,56 @@ app.registerExtension({
             }
             return res;
         };
+
+        // Atajo global F4: Buscar, centrar y seleccionar el nodo llamado "loras13"
+        window.addEventListener("keydown", (e) => {
+            if (e.key === "F4" || e.code === "F4") {
+                if (!app.graph || !app.graph._nodes) return;
+
+                const targetNode = app.graph._nodes.find(n => (n.title || "").trim().toLowerCase() === "loras13") ||
+                                   app.graph._nodes.find(n => n.type === "AcademiaSD_MultiLora" && (n.title || "").toLowerCase().includes("loras13"));
+
+                if (targetNode) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.stopImmediatePropagation();
+
+                    if (document.activeElement && typeof document.activeElement.blur === "function") {
+                        document.activeElement.blur();
+                    }
+
+                    if (app.canvas) {
+                        if (app.canvas.deselectAllNodes) {
+                            app.canvas.deselectAllNodes();
+                        } else {
+                            app.canvas.selected_nodes = {};
+                        }
+
+                        if (app.canvas.selectNode) {
+                            app.canvas.selectNode(targetNode, false);
+                        } else {
+                            app.canvas.selected_nodes = { [targetNode.id]: targetNode };
+                        }
+
+                        if (app.canvas.centerOnNode) {
+                            app.canvas.centerOnNode(targetNode);
+                        } else if (app.canvas.ds && targetNode.pos) {
+                            const canvas = app.canvas;
+                            canvas.ds.offset[0] = -targetNode.pos[0] + canvas.canvas.width / 2 / canvas.ds.scale;
+                            canvas.ds.offset[1] = -targetNode.pos[1] + canvas.canvas.height / 2 / canvas.ds.scale;
+                        }
+
+                        if (app.canvas.setDirty) {
+                            app.canvas.setDirty(true, true);
+                        }
+                    }
+
+                    if (app.graph.setDirtyCanvas) {
+                        app.graph.setDirtyCanvas(true, true);
+                    }
+                }
+            }
+        }, true);
     },
 
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
@@ -53,6 +103,7 @@ app.registerExtension({
                     }
                 }
                 if (this.renderUI) this.renderUI();
+                if (this.forceResize) this.forceResize();
             };
 
             const onNodeCreated = nodeType.prototype.onNodeCreated;
@@ -66,6 +117,12 @@ app.registerExtension({
                     dataWidget.type = "hidden";
                     dataWidget.computeSize = () => [0, -4]; 
                     dataWidget.draw = function() {}; 
+                    dataWidget.serializeValue = () => {
+                        return JSON.stringify({
+                            loras: _this.loraState || [],
+                            triggers: _this.nodeTriggers || ""
+                        });
+                    };
                 }
 
                 if (!this.loraState) {
@@ -112,110 +169,11 @@ app.registerExtension({
                     this.nodeTriggers = "";
                 }
 
-                // --- UTILIDADES: PORTAPAPELES E INYECCIÓN ---
-                const copyToClipboard = async (text) => {
-                    if (!text) return false;
-                    // 1. Intentar API moderna de portapapeles si está disponible
-                    if (navigator.clipboard && window.isSecureContext) {
-                        try {
-                            await navigator.clipboard.writeText(text);
-                            return true;
-                        } catch (err) {}
-                    }
-                    // 2. Fallback universal garantizado para HTTP y red local
-                    try {
-                        const ta = document.createElement("textarea");
-                        ta.value = text;
-                        ta.style.position = "fixed";
-                        ta.style.left = "-9999px";
-                        ta.style.top = "-9999px";
-                        ta.style.opacity = "0";
-                        document.body.appendChild(ta);
-                        ta.focus();
-                        ta.select();
-                        const ok = document.execCommand("copy");
-                        document.body.removeChild(ta);
-                        return ok;
-                    } catch (e) {
-                        console.error("[AcademiaSD] Error en fallback de portapapeles:", e);
-                        return false;
-                    }
-                };
-
-                const injectIntoConnectedPrompt = (text) => {
-                    if (!text || !app.graph) return false;
-                    let injected = false;
-                    const clipOutput = _this.outputs?.[1]; // Salida 1 es CLIP
-                    const textOutput = _this.outputs?.[2]; // Salida 2 es text
-                    const linksToCheck = [...(clipOutput?.links || []), ...(textOutput?.links || [])];
-
-                    for (let linkId of linksToCheck) {
-                        const link = app.graph.links?.[linkId];
-                        if (link) {
-                            const targetNode = app.graph.getNodeById(link.target_id);
-                            if (targetNode) {
-                                // 1. Si es un nodo de prompt de AcademiaSD (con custom DOM textarea)
-                                const customTa = targetNode.domWidget?.element?.querySelector(".asd-p-textarea");
-                                const nativeTextWidget = targetNode.widgets?.find(w => w.name === "text");
-                                if (customTa) {
-                                    const current = customTa.value.trim();
-                                    if (!current.includes(text.trim())) {
-                                        customTa.value = current ? `${text.trim()}, ${current}` : text.trim();
-                                        if (nativeTextWidget) nativeTextWidget.value = customTa.value;
-                                        customTa.dispatchEvent(new Event("input"));
-                                    }
-                                    injected = true;
-                                } else if (nativeTextWidget) {
-                                    // 2. Si es un nodo estándar de CLIPTextEncode
-                                    const current = (nativeTextWidget.value || "").trim();
-                                    if (!current.includes(text.trim())) {
-                                        nativeTextWidget.value = current ? `${text.trim()}, ${current}` : text.trim();
-                                    }
-                                    injected = true;
-                                }
-                                targetNode.setDirtyCanvas(true, true);
-                            }
-                        }
-                    }
-                    return injected;
-                };
-
-                // --- SECCIÓN GENERAL DE TRIGGER WORDS (AL INICIO DEL NODO) ---
-                const trigSection = document.createElement("div");
-                trigSection.style.cssText = "display: flex; flex-direction: column; gap: 4px; background: rgba(0,0,0,0.35); border: 1px solid #444; border-radius: 6px; padding: 6px 8px; box-sizing: border-box;";
-
-                const trigHeader = document.createElement("div");
-                trigHeader.style.cssText = "display: flex; justify-content: space-between; align-items: center;";
-
-                const trigLabel = document.createElement("span");
-                trigLabel.innerText = "🏷️ Trigger Words";
-                trigLabel.style.cssText = "color: #ccc; font-size: 11px; font-weight: bold;";
-
-                const trigActions = document.createElement("div");
-                trigActions.style.cssText = "display: flex; gap: 4px; align-items: center;";
-
-                const btnAutoTriggers = document.createElement("button");
-                btnAutoTriggers.type = "button";
-                btnAutoTriggers.innerText = "🪄 Auto";
-                btnAutoTriggers.title = "Extraer tags/triggers del primer LoRA activo";
-                btnAutoTriggers.style.cssText = "cursor: pointer; background: rgba(255,255,255,0.06); color: #aaa; border: 1px solid #444; border-radius: 4px; font-size: 10px; font-weight: bold; padding: 2px 6px; transition: all 0.2s;";
-                btnAutoTriggers.onmouseover = () => { btnAutoTriggers.style.background = "#4a6ee0"; btnAutoTriggers.style.color = "#fff"; };
-                btnAutoTriggers.onmouseout = () => { btnAutoTriggers.style.background = "rgba(255,255,255,0.06)"; btnAutoTriggers.style.color = "#aaa"; };
-
-                const btnCopy = document.createElement("button");
-                btnCopy.type = "button";
-                btnCopy.innerText = "📋 Copiar";
-                btnCopy.title = "Copiar trigger words al portapapeles e inyectar en prompt conectado si existe";
-                btnCopy.style.cssText = "cursor: pointer; background: rgba(74,110,224,0.18); color: #88c0d0; border: 1px solid #4a6ee0; border-radius: 4px; font-size: 10px; font-weight: bold; padding: 2px 8px; transition: all 0.2s;";
-                btnCopy.onmouseover = () => btnCopy.style.background = "rgba(74,110,224,0.35)";
-                btnCopy.onmouseout = () => btnCopy.style.background = "rgba(74,110,224,0.18)";
-
-                trigActions.appendChild(btnAutoTriggers);
-                trigActions.appendChild(btnCopy);
-
-                const txtTriggers = document.createElement("textarea");
-                txtTriggers.placeholder = "Trigger words del personaje o estilo (ej: 1girl, sakura, pink hair)...";
-                txtTriggers.style.cssText = "width: 100%; height: 38px; padding: 4px 6px; border: 1px solid #444; background: #0d0d0d; color: #eee; border-radius: 4px; font-size: 11px; font-family: inherit; resize: none; outline: none; box-sizing: border-box; transition: border-color 0.2s;";
+                // --- CAJA DE TEXTO PARA TRIGGER WORDS (UNA SOLA LÍNEA) ---
+                const txtTriggers = document.createElement("input");
+                txtTriggers.type = "text";
+                txtTriggers.placeholder = "Trigger words (ej: 1girl, sakura, pink hair)...";
+                txtTriggers.style.cssText = "width: 100%; height: 26px; min-height: 26px; flex-shrink: 0; padding: 4px 8px; border: 1px solid #444; background: #0d0d0d; color: #eee; border-radius: 4px; font-size: 11px; font-family: inherit; outline: none; box-sizing: border-box; transition: border-color 0.2s; text-overflow: ellipsis;";
                 txtTriggers.onfocus = () => { txtTriggers.style.borderColor = "#4a6ee0"; };
                 txtTriggers.onblur = () => { txtTriggers.style.borderColor = "#444"; };
                 txtTriggers.value = _this.nodeTriggers || "";
@@ -225,61 +183,7 @@ app.registerExtension({
                     syncWidget();
                 });
 
-                btnCopy.addEventListener("click", async () => {
-                    const textToCopy = (txtTriggers.value || "").trim();
-                    if (!textToCopy) {
-                        btnCopy.innerText = "⚠️ Vacío";
-                        setTimeout(() => { btnCopy.innerText = "📋 Copiar"; }, 1500);
-                        return;
-                    }
-                    const copied = await copyToClipboard(textToCopy);
-                    const injected = injectIntoConnectedPrompt(textToCopy);
-                    if (copied && injected) {
-                        btnCopy.innerText = "✅ Copiado + Inyectado!";
-                    } else if (copied) {
-                        btnCopy.innerText = "✅ ¡Copiado!";
-                    } else if (injected) {
-                        btnCopy.innerText = "⚡ ¡Inyectado!";
-                    } else {
-                        btnCopy.innerText = "❌ Error";
-                    }
-                    setTimeout(() => { btnCopy.innerText = "📋 Copiar"; }, 1800);
-                });
-
-                btnAutoTriggers.addEventListener("click", async () => {
-                    const firstLora = (_this.loraState || []).find(l => (l.enabled !== false) && l.name && l.name !== "None");
-                    if (!firstLora) {
-                        btnAutoTriggers.innerText = "⚠️ Sin LoRA";
-                        setTimeout(() => { btnAutoTriggers.innerText = "🪄 Auto"; }, 1500);
-                        return;
-                    }
-                    btnAutoTriggers.innerText = "⏳...";
-                    try {
-                        const res = await fetch("/academia/lora_info", {
-                            method: "POST", headers: {"Content-Type": "application/json"},
-                            body: JSON.stringify({name: firstLora.name})
-                        });
-                        const jsonRes = await res.json();
-                        if (jsonRes.triggers) {
-                            txtTriggers.value = jsonRes.triggers;
-                            _this.nodeTriggers = jsonRes.triggers;
-                            syncWidget();
-                            btnAutoTriggers.innerText = "✅ Listo";
-                        } else {
-                            btnAutoTriggers.innerText = "⚠️ Sin tags";
-                        }
-                    } catch (e) {
-                        btnAutoTriggers.innerText = "❌ Error";
-                    } finally {
-                        setTimeout(() => { btnAutoTriggers.innerText = "🪄 Auto"; }, 1500);
-                    }
-                });
-
-                trigHeader.appendChild(trigLabel);
-                trigHeader.appendChild(trigActions);
-                trigSection.appendChild(trigHeader);
-                trigSection.appendChild(txtTriggers);
-                container.appendChild(trigSection);
+                container.appendChild(txtTriggers);
 
                 const topBar = document.createElement("div");
                 topBar.style.display = "flex"; 
@@ -331,43 +235,39 @@ app.registerExtension({
                 container.appendChild(btnAdd);
 
                 const MIN_WIDTH = 420;
-                const ROW_HEIGHT = 40;
 
                 this.computeSize = function(out) {
                     const numRows = _this.loraState ? _this.loraState.length : (_this.rowsContainer ? _this.rowsContainer.children.length : 0);
-                    const slotsCount = Math.max(
-                        _this.inputs ? _this.inputs.length : 3,
-                        _this.outputs ? _this.outputs.length : 3,
-                        1
-                    );
-                    const canvasTopH = 34 + (slotsCount * 22) + 28; // Title (~34px) + slots (3 * 22px) + injection_method widget (~28px)
-                    const staticHtmlH = 152; // Triggers box (~78px) + Toggle All bar (~20px) + Add button (~34px) + gaps/margins (~20px)
-                    const computedHeight = canvasTopH + staticHtmlH + (numRows * ROW_HEIGHT);
-                    return [MIN_WIDTH, computedHeight];
+                    // Encabezado del canvas: título (30) + 3 slots (66) + injection_method (28) = ~124px
+                    const canvasTopH = 124;
+                    // Contenido HTML: input 1 línea (26+6) + topBar (22+6) + rows (numRows * 34) + btnAdd (30+4) + padding (6) = 100 + (numRows * 34)px
+                    const domH = 100 + (numRows * 34);
+                    const currentW = Math.max(_this.size ? _this.size[0] : 0, MIN_WIDTH);
+                    return [currentW, canvasTopH + domH];
                 };
 
                 const originalOnResize = this.onResize;
                 this.onResize = function(size) {
                     if (originalOnResize) originalOnResize.apply(this, arguments);
                     const minSize = this.computeSize();
-                    if (size[1] < minSize[1]) size[1] = minSize[1];
                     if (size[0] < minSize[0]) size[0] = minSize[0];
+                    if (size[1] < minSize[1]) size[1] = minSize[1];
                 };
 
                 const forceResize = () => {
                     const applySize = () => {
                         const minSize = _this.computeSize();
                         const currentW = Math.max(_this.size ? _this.size[0] : 0, MIN_WIDTH);
-                        _this.size[0] = currentW;
-                        _this.size[1] = minSize[1];
-                        if (_this.setSize) {
+                        _this.size = [currentW, minSize[1]];
+                        if (typeof _this.setSize === "function") {
                             _this.setSize([currentW, minSize[1]]);
                         }
                         app.graph.setDirtyCanvas(true, true);
                     };
                     applySize();
-                    setTimeout(applySize, 25);
+                    setTimeout(applySize, 30);
                 };
+                this.forceResize = forceResize;
 
                 // --- NUEVA ARQUITECTURA DE DATOS REACTIVA ---
                 const syncWidget = () => {
@@ -381,6 +281,14 @@ app.registerExtension({
                         _this.properties.triggers = _this.nodeTriggers || "";
                     }
                     app.graph.setDirtyCanvas(true, false);
+                };
+
+                const moveLora = (fromIdx, toIdx) => {
+                    if (toIdx < 0 || toIdx >= _this.loraState.length) return;
+                    const item = _this.loraState.splice(fromIdx, 1)[0];
+                    _this.loraState.splice(toIdx, 0, item);
+                    syncWidget();
+                    _this.renderUI();
                 };
 
                 const checkToggleAll = () => {
@@ -613,7 +521,26 @@ app.registerExtension({
                             }
                         });
 
+                        inputStrength.addEventListener("focus", function() {
+                            this.style.background = "rgba(74, 110, 224, 0.4)";
+                            this.style.borderRadius = "3px";
+                            this.select();
+                        });
+
+                        inputStrength.addEventListener("keydown", function(e) {
+                            if (e.key === "ArrowUp") {
+                                e.preventDefault();
+                                adjustValue(e.shiftKey ? 0.2 : 0.05);
+                            } else if (e.key === "ArrowDown") {
+                                e.preventDefault();
+                                adjustValue(e.shiftKey ? -0.2 : -0.05);
+                            } else if (e.key === "Enter") {
+                                this.blur();
+                            }
+                        });
+
                         inputStrength.addEventListener("blur", function() {
+                            this.style.background = "transparent";
                             let parsed = parseFloat(this.value);
                             if (isNaN(parsed)) parsed = 0.0;
                             this.value = parsed.toFixed(2);
@@ -645,9 +572,82 @@ app.registerExtension({
                             _this.renderUI();
                         });
 
+                        // Botones para reordenar arriba/abajo
+                        const orderContainer = document.createElement("div");
+                        orderContainer.style.cssText = "display: flex; flex-direction: column; justify-content: center; gap: 1px; margin: 0 1px;";
+
+                        const btnUp = document.createElement("button");
+                        btnUp.type = "button";
+                        btnUp.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M18 15l-6-6-6 6"/></svg>`;
+                        btnUp.title = "Subir (Move Up)";
+                        btnUp.style.cssText = `background: transparent; border: none; color: ${idx === 0 ? '#333' : '#777'}; cursor: ${idx === 0 ? 'default' : 'pointer'}; padding: 1px 2px; display: flex; align-items: center; justify-content: center; line-height: 1; transition: color 0.15s;`;
+                        if (idx > 0) {
+                            btnUp.onmouseover = () => btnUp.style.color = "#fff";
+                            btnUp.onmouseout = () => btnUp.style.color = "#777";
+                            btnUp.addEventListener("click", () => moveLora(idx, idx - 1));
+                        }
+
+                        const btnDown = document.createElement("button");
+                        btnDown.type = "button";
+                        btnDown.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>`;
+                        btnDown.title = "Bajar (Move Down)";
+                        const isLast = idx === _this.loraState.length - 1;
+                        btnDown.style.cssText = `background: transparent; border: none; color: ${isLast ? '#333' : '#777'}; cursor: ${isLast ? 'default' : 'pointer'}; padding: 1px 2px; display: flex; align-items: center; justify-content: center; line-height: 1; transition: color 0.15s;`;
+                        if (!isLast) {
+                            btnDown.onmouseover = () => btnDown.style.color = "#fff";
+                            btnDown.onmouseout = () => btnDown.style.color = "#777";
+                            btnDown.addEventListener("click", () => moveLora(idx, idx + 1));
+                        }
+
+                        orderContainer.appendChild(btnUp);
+                        orderContainer.appendChild(btnDown);
+
+                        // Click derecho sobre la fila para mostrar menú contextual (estilo Power Lora Loader rgthree)
+                        row.addEventListener("contextmenu", (e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            if (window.LiteGraph && window.LiteGraph.ContextMenu) {
+                                const canMoveUp = idx > 0;
+                                const canMoveDown = idx < _this.loraState.length - 1;
+                                new LiteGraph.ContextMenu([
+                                    {
+                                        content: "⬆️ Move Up",
+                                        disabled: !canMoveUp,
+                                        callback: () => moveLora(idx, idx - 1)
+                                    },
+                                    {
+                                        content: "⬇️ Move Down",
+                                        disabled: !canMoveDown,
+                                        callback: () => moveLora(idx, idx + 1)
+                                    },
+                                    null,
+                                    {
+                                        content: isEnabled ? "⚫ Desactivar" : "🟢 Activar",
+                                        callback: () => {
+                                            _this.loraState[idx].enabled = !isEnabled;
+                                            syncWidget();
+                                            _this.renderUI();
+                                        }
+                                    },
+                                    {
+                                        content: "🗑️ Remove",
+                                        callback: () => {
+                                            _this.loraState.splice(idx, 1);
+                                            syncWidget();
+                                            _this.renderUI();
+                                        }
+                                    }
+                                ], {
+                                    event: e,
+                                    title: item.name ? item.name.split(/[/\\]/).pop() : "LoRA Options"
+                                });
+                            }
+                        });
+
                         row.appendChild(labelToggle);
                         row.appendChild(searchContainer);
                         row.appendChild(strengthContainer);
+                        row.appendChild(orderContainer);
                         row.appendChild(btnDelete);
                         
                         _this.rowsContainer.appendChild(row);
@@ -685,6 +685,56 @@ app.registerExtension({
                     document.body.appendChild(globalTooltip);
                 }
 
+                // --- ACCESOS DIRECTOS DE TECLADO ---
+                const onKeyDownCapture = (e) => {
+                    if (!_this.graph) return;
+                    const isSelected = app.canvas && app.canvas.selected_nodes && app.canvas.selected_nodes[_this.id];
+                    if (!isSelected) return;
+
+                    // Option / Alt + número (1..9) enfoca el campo de fuerza del LoRA correspondiente
+                    if (e.altKey && !e.ctrlKey && !e.metaKey) {
+                        let digit = -1;
+                        if (e.code && e.code.startsWith("Digit")) {
+                            digit = parseInt(e.code.replace("Digit", ""));
+                        } else if (e.key >= "0" && e.key <= "9") {
+                            digit = parseInt(e.key);
+                        }
+
+                        if (digit >= 1 && digit <= 9) {
+                            const loraIdx = digit - 1;
+                            if (_this.rowsContainer && _this.rowsContainer.children[loraIdx]) {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                e.stopImmediatePropagation();
+
+                                const targetRow = _this.rowsContainer.children[loraIdx];
+                                const strengthInput = targetRow.querySelector(".lora-strength");
+                                if (strengthInput) {
+                                    strengthInput.focus();
+                                    strengthInput.select();
+                                }
+                            }
+                        } else if (digit === 0) {
+                            // Option + 0 enfoca la caja de trigger words
+                            e.preventDefault();
+                            e.stopPropagation();
+                            e.stopImmediatePropagation();
+                            if (txtTriggers) {
+                                txtTriggers.focus();
+                                txtTriggers.select();
+                            }
+                        }
+                    }
+                };
+
+                window.addEventListener("keydown", onKeyDownCapture, true);
+
+                const origOnRemoved = this.onRemoved;
+                this.onRemoved = function() {
+                    window.removeEventListener("keydown", onKeyDownCapture, true);
+                    if (origOnRemoved) origOnRemoved.apply(this, arguments);
+                };
+
                 // INICIALIZACIÓN
                 this.fetchLoras().then(() => {
                     if (dataWidget && dataWidget.value) {
@@ -703,6 +753,7 @@ app.registerExtension({
                         } catch (e) {}
                     }
                     _this.renderUI();
+                    if (_this.forceResize) _this.forceResize();
                 });
             };
         }
