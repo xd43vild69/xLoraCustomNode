@@ -17,6 +17,56 @@ app.registerExtension({
             }
             return res;
         };
+
+        // Atajo global F4: Buscar, centrar y seleccionar el nodo llamado "loras13"
+        window.addEventListener("keydown", (e) => {
+            if (e.key === "F4" || e.code === "F4") {
+                if (!app.graph || !app.graph._nodes) return;
+
+                const targetNode = app.graph._nodes.find(n => (n.title || "").trim().toLowerCase() === "loras13") ||
+                                   app.graph._nodes.find(n => n.type === "AcademiaSD_MultiLora" && (n.title || "").toLowerCase().includes("loras13"));
+
+                if (targetNode) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.stopImmediatePropagation();
+
+                    if (document.activeElement && typeof document.activeElement.blur === "function") {
+                        document.activeElement.blur();
+                    }
+
+                    if (app.canvas) {
+                        if (app.canvas.deselectAllNodes) {
+                            app.canvas.deselectAllNodes();
+                        } else {
+                            app.canvas.selected_nodes = {};
+                        }
+
+                        if (app.canvas.selectNode) {
+                            app.canvas.selectNode(targetNode, false);
+                        } else {
+                            app.canvas.selected_nodes = { [targetNode.id]: targetNode };
+                        }
+
+                        if (app.canvas.centerOnNode) {
+                            app.canvas.centerOnNode(targetNode);
+                        } else if (app.canvas.ds && targetNode.pos) {
+                            const canvas = app.canvas;
+                            canvas.ds.offset[0] = -targetNode.pos[0] + canvas.canvas.width / 2 / canvas.ds.scale;
+                            canvas.ds.offset[1] = -targetNode.pos[1] + canvas.canvas.height / 2 / canvas.ds.scale;
+                        }
+
+                        if (app.canvas.setDirty) {
+                            app.canvas.setDirty(true, true);
+                        }
+                    }
+
+                    if (app.graph.setDirtyCanvas) {
+                        app.graph.setDirtyCanvas(true, true);
+                    }
+                }
+            }
+        }, true);
     },
 
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
@@ -37,6 +87,10 @@ app.registerExtension({
             const onConfigure = nodeType.prototype.onConfigure;
             nodeType.prototype.onConfigure = function(o) {
                 if (onConfigure) onConfigure.apply(this, arguments);
+                const injectionWidget = this.widgets?.find(w => w.name === "injection_method");
+                if (injectionWidget) {
+                    injectionWidget.value = "Standard (Native)";
+                }
                 const dataWidget = this.widgets.find(w => w.name === "lora_data");
                 if (dataWidget && dataWidget.value) {
                     try {
@@ -53,6 +107,7 @@ app.registerExtension({
                     }
                 }
                 if (this.renderUI) this.renderUI();
+                if (this.forceResize) this.forceResize();
             };
 
             const onNodeCreated = nodeType.prototype.onNodeCreated;
@@ -61,11 +116,26 @@ app.registerExtension({
 
                 const _this = this;
 
+                const injectionWidget = this.widgets.find(w => w.name === "injection_method");
+                if (injectionWidget) {
+                    injectionWidget.value = "Standard (Native)";
+                    injectionWidget.type = "hidden";
+                    injectionWidget.computeSize = () => [0, -4];
+                    injectionWidget.draw = function() {};
+                    injectionWidget.serializeValue = () => "Standard (Native)";
+                }
+
                 const dataWidget = this.widgets.find(w => w.name === "lora_data");
                 if (dataWidget) {
                     dataWidget.type = "hidden";
                     dataWidget.computeSize = () => [0, -4]; 
                     dataWidget.draw = function() {}; 
+                    dataWidget.serializeValue = () => {
+                        return JSON.stringify({
+                            loras: _this.loraState || [],
+                            triggers: _this.nodeTriggers || ""
+                        });
+                    };
                 }
 
                 if (!this.loraState) {
@@ -100,7 +170,7 @@ app.registerExtension({
                     .asd-search-list { position: absolute; top: 100%; left: 0; right: 0; background: #222; border: 1px solid #555; border-radius: 4px; max-height: 200px; overflow-y: auto; z-index: 9999; display: none; box-shadow: 0 4px 10px rgba(0,0,0,0.6); margin-top: 2px;}
                     .asd-search-item { padding: 6px 8px; cursor: pointer; color: #ddd; font-size: 11px; word-break: break-all; border-bottom: 1px solid #333;}
                     .asd-search-item:last-child { border-bottom: none; }
-                    .asd-search-item:hover { background: #4a6ee0; color: #fff; }
+                    .asd-search-item:hover, .asd-search-item.active { background: rgba(74, 110, 224, 0.45) !important; color: #fff !important; box-shadow: inset 0 0 0 1px rgba(125, 211, 252, 0.5); }
                     .asd-search-item.missing { color: #ff4444; font-weight: bold; }
 
                     .asd-step-btn { background: transparent; border: none; color: #888; font-size: 14px; font-weight: bold; cursor: pointer; padding: 0 4px; transition: color 0.2s; user-select: none; }
@@ -112,110 +182,11 @@ app.registerExtension({
                     this.nodeTriggers = "";
                 }
 
-                // --- UTILIDADES: PORTAPAPELES E INYECCIÓN ---
-                const copyToClipboard = async (text) => {
-                    if (!text) return false;
-                    // 1. Intentar API moderna de portapapeles si está disponible
-                    if (navigator.clipboard && window.isSecureContext) {
-                        try {
-                            await navigator.clipboard.writeText(text);
-                            return true;
-                        } catch (err) {}
-                    }
-                    // 2. Fallback universal garantizado para HTTP y red local
-                    try {
-                        const ta = document.createElement("textarea");
-                        ta.value = text;
-                        ta.style.position = "fixed";
-                        ta.style.left = "-9999px";
-                        ta.style.top = "-9999px";
-                        ta.style.opacity = "0";
-                        document.body.appendChild(ta);
-                        ta.focus();
-                        ta.select();
-                        const ok = document.execCommand("copy");
-                        document.body.removeChild(ta);
-                        return ok;
-                    } catch (e) {
-                        console.error("[AcademiaSD] Error en fallback de portapapeles:", e);
-                        return false;
-                    }
-                };
-
-                const injectIntoConnectedPrompt = (text) => {
-                    if (!text || !app.graph) return false;
-                    let injected = false;
-                    const clipOutput = _this.outputs?.[1]; // Salida 1 es CLIP
-                    const textOutput = _this.outputs?.[2]; // Salida 2 es text
-                    const linksToCheck = [...(clipOutput?.links || []), ...(textOutput?.links || [])];
-
-                    for (let linkId of linksToCheck) {
-                        const link = app.graph.links?.[linkId];
-                        if (link) {
-                            const targetNode = app.graph.getNodeById(link.target_id);
-                            if (targetNode) {
-                                // 1. Si es un nodo de prompt de AcademiaSD (con custom DOM textarea)
-                                const customTa = targetNode.domWidget?.element?.querySelector(".asd-p-textarea");
-                                const nativeTextWidget = targetNode.widgets?.find(w => w.name === "text");
-                                if (customTa) {
-                                    const current = customTa.value.trim();
-                                    if (!current.includes(text.trim())) {
-                                        customTa.value = current ? `${text.trim()}, ${current}` : text.trim();
-                                        if (nativeTextWidget) nativeTextWidget.value = customTa.value;
-                                        customTa.dispatchEvent(new Event("input"));
-                                    }
-                                    injected = true;
-                                } else if (nativeTextWidget) {
-                                    // 2. Si es un nodo estándar de CLIPTextEncode
-                                    const current = (nativeTextWidget.value || "").trim();
-                                    if (!current.includes(text.trim())) {
-                                        nativeTextWidget.value = current ? `${text.trim()}, ${current}` : text.trim();
-                                    }
-                                    injected = true;
-                                }
-                                targetNode.setDirtyCanvas(true, true);
-                            }
-                        }
-                    }
-                    return injected;
-                };
-
-                // --- SECCIÓN GENERAL DE TRIGGER WORDS (AL INICIO DEL NODO) ---
-                const trigSection = document.createElement("div");
-                trigSection.style.cssText = "display: flex; flex-direction: column; gap: 4px; background: rgba(0,0,0,0.35); border: 1px solid #444; border-radius: 6px; padding: 6px 8px; box-sizing: border-box;";
-
-                const trigHeader = document.createElement("div");
-                trigHeader.style.cssText = "display: flex; justify-content: space-between; align-items: center;";
-
-                const trigLabel = document.createElement("span");
-                trigLabel.innerText = "🏷️ Trigger Words";
-                trigLabel.style.cssText = "color: #ccc; font-size: 11px; font-weight: bold;";
-
-                const trigActions = document.createElement("div");
-                trigActions.style.cssText = "display: flex; gap: 4px; align-items: center;";
-
-                const btnAutoTriggers = document.createElement("button");
-                btnAutoTriggers.type = "button";
-                btnAutoTriggers.innerText = "🪄 Auto";
-                btnAutoTriggers.title = "Extraer tags/triggers del primer LoRA activo";
-                btnAutoTriggers.style.cssText = "cursor: pointer; background: rgba(255,255,255,0.06); color: #aaa; border: 1px solid #444; border-radius: 4px; font-size: 10px; font-weight: bold; padding: 2px 6px; transition: all 0.2s;";
-                btnAutoTriggers.onmouseover = () => { btnAutoTriggers.style.background = "#4a6ee0"; btnAutoTriggers.style.color = "#fff"; };
-                btnAutoTriggers.onmouseout = () => { btnAutoTriggers.style.background = "rgba(255,255,255,0.06)"; btnAutoTriggers.style.color = "#aaa"; };
-
-                const btnCopy = document.createElement("button");
-                btnCopy.type = "button";
-                btnCopy.innerText = "📋 Copiar";
-                btnCopy.title = "Copiar trigger words al portapapeles e inyectar en prompt conectado si existe";
-                btnCopy.style.cssText = "cursor: pointer; background: rgba(74,110,224,0.18); color: #88c0d0; border: 1px solid #4a6ee0; border-radius: 4px; font-size: 10px; font-weight: bold; padding: 2px 8px; transition: all 0.2s;";
-                btnCopy.onmouseover = () => btnCopy.style.background = "rgba(74,110,224,0.35)";
-                btnCopy.onmouseout = () => btnCopy.style.background = "rgba(74,110,224,0.18)";
-
-                trigActions.appendChild(btnAutoTriggers);
-                trigActions.appendChild(btnCopy);
-
-                const txtTriggers = document.createElement("textarea");
-                txtTriggers.placeholder = "Trigger words del personaje o estilo (ej: 1girl, sakura, pink hair)...";
-                txtTriggers.style.cssText = "width: 100%; height: 38px; padding: 4px 6px; border: 1px solid #444; background: #0d0d0d; color: #eee; border-radius: 4px; font-size: 11px; font-family: inherit; resize: none; outline: none; box-sizing: border-box; transition: border-color 0.2s;";
+                // --- CAJA DE TEXTO PARA TRIGGER WORDS (UNA SOLA LÍNEA) ---
+                const txtTriggers = document.createElement("input");
+                txtTriggers.type = "text";
+                txtTriggers.placeholder = "Trigger words (ej: 1girl, sakura, pink hair)...";
+                txtTriggers.style.cssText = "width: 100%; height: 26px; min-height: 26px; flex-shrink: 0; padding: 4px 8px; border: 1px solid #444; background: #0d0d0d; color: #eee; border-radius: 4px; font-size: 11px; font-family: inherit; outline: none; box-sizing: border-box; transition: border-color 0.2s; text-overflow: ellipsis;";
                 txtTriggers.onfocus = () => { txtTriggers.style.borderColor = "#4a6ee0"; };
                 txtTriggers.onblur = () => { txtTriggers.style.borderColor = "#444"; };
                 txtTriggers.value = _this.nodeTriggers || "";
@@ -225,61 +196,7 @@ app.registerExtension({
                     syncWidget();
                 });
 
-                btnCopy.addEventListener("click", async () => {
-                    const textToCopy = (txtTriggers.value || "").trim();
-                    if (!textToCopy) {
-                        btnCopy.innerText = "⚠️ Vacío";
-                        setTimeout(() => { btnCopy.innerText = "📋 Copiar"; }, 1500);
-                        return;
-                    }
-                    const copied = await copyToClipboard(textToCopy);
-                    const injected = injectIntoConnectedPrompt(textToCopy);
-                    if (copied && injected) {
-                        btnCopy.innerText = "✅ Copiado + Inyectado!";
-                    } else if (copied) {
-                        btnCopy.innerText = "✅ ¡Copiado!";
-                    } else if (injected) {
-                        btnCopy.innerText = "⚡ ¡Inyectado!";
-                    } else {
-                        btnCopy.innerText = "❌ Error";
-                    }
-                    setTimeout(() => { btnCopy.innerText = "📋 Copiar"; }, 1800);
-                });
-
-                btnAutoTriggers.addEventListener("click", async () => {
-                    const firstLora = (_this.loraState || []).find(l => (l.enabled !== false) && l.name && l.name !== "None");
-                    if (!firstLora) {
-                        btnAutoTriggers.innerText = "⚠️ Sin LoRA";
-                        setTimeout(() => { btnAutoTriggers.innerText = "🪄 Auto"; }, 1500);
-                        return;
-                    }
-                    btnAutoTriggers.innerText = "⏳...";
-                    try {
-                        const res = await fetch("/academia/lora_info", {
-                            method: "POST", headers: {"Content-Type": "application/json"},
-                            body: JSON.stringify({name: firstLora.name})
-                        });
-                        const jsonRes = await res.json();
-                        if (jsonRes.triggers) {
-                            txtTriggers.value = jsonRes.triggers;
-                            _this.nodeTriggers = jsonRes.triggers;
-                            syncWidget();
-                            btnAutoTriggers.innerText = "✅ Listo";
-                        } else {
-                            btnAutoTriggers.innerText = "⚠️ Sin tags";
-                        }
-                    } catch (e) {
-                        btnAutoTriggers.innerText = "❌ Error";
-                    } finally {
-                        setTimeout(() => { btnAutoTriggers.innerText = "🪄 Auto"; }, 1500);
-                    }
-                });
-
-                trigHeader.appendChild(trigLabel);
-                trigHeader.appendChild(trigActions);
-                trigSection.appendChild(trigHeader);
-                trigSection.appendChild(txtTriggers);
-                container.appendChild(trigSection);
+                container.appendChild(txtTriggers);
 
                 const topBar = document.createElement("div");
                 topBar.style.display = "flex"; 
@@ -309,12 +226,33 @@ app.registerExtension({
                 toggleAllContainer.appendChild(labelToggleAll);
                 toggleAllContainer.appendChild(textToggleAll);
 
+                const topActionsContainer = document.createElement("div");
+                topActionsContainer.style.cssText = "display: flex; align-items: center; gap: 6px;";
+
                 const btnRefresh = document.createElement("button");
                 btnRefresh.innerText = "🔄 Refresh List";
-                btnRefresh.style.cssText = "cursor: pointer; background: transparent; color: #888; border: none; font-size: 10px;";
-                
+                btnRefresh.style.cssText = "cursor: pointer; background: transparent; color: #888; border: none; font-size: 10px; padding: 2px 4px; transition: color 0.15s;";
+                btnRefresh.onmouseover = () => { if (btnRefresh.innerText.includes("Refresh")) btnRefresh.style.color = "#ccc"; };
+                btnRefresh.onmouseout = () => { if (btnRefresh.innerText.includes("Refresh")) btnRefresh.style.color = "#888"; };
+
+                const btnAdd = document.createElement("button");
+                btnAdd.innerText = "➕ Add";
+                btnAdd.title = "Add LoRA (Cmd+N)";
+                btnAdd.style.cssText = "cursor: pointer; padding: 2px 7px; background: rgba(74, 110, 224, 0.2); color: #93c5fd; border: 1px solid rgba(74, 110, 224, 0.45); border-radius: 4px; font-weight: 600; font-size: 10px; transition: all 0.15s;";
+                btnAdd.onmouseover = () => {
+                    btnAdd.style.background = "rgba(74, 110, 224, 0.38)";
+                    btnAdd.style.color = "#fff";
+                };
+                btnAdd.onmouseout = () => {
+                    btnAdd.style.background = "rgba(74, 110, 224, 0.2)";
+                    btnAdd.style.color = "#93c5fd";
+                };
+
+                topActionsContainer.appendChild(btnRefresh);
+                topActionsContainer.appendChild(btnAdd);
+
                 topBar.appendChild(toggleAllContainer);
-                topBar.appendChild(btnRefresh);
+                topBar.appendChild(topActionsContainer);
                 container.appendChild(topBar);
 
                 this.rowsContainer = document.createElement("div");
@@ -323,51 +261,43 @@ app.registerExtension({
                 this.rowsContainer.style.gap = "4px"; 
                 container.appendChild(this.rowsContainer);
 
-                const btnAdd = document.createElement("button");
-                btnAdd.innerText = "➕ Add Lora";
-                btnAdd.style.cssText = "cursor: pointer; padding: 6px; background: rgba(255,255,255,0.05); color: #aaa; border: 1px solid #444; border-radius: 6px; font-weight: bold; margin-top: 4px; font-size: 11px; transition: background 0.2s;";
-                btnAdd.onmouseover = () => btnAdd.style.background = "rgba(255,255,255,0.1)";
-                btnAdd.onmouseout = () => btnAdd.style.background = "rgba(255,255,255,0.05)";
-                container.appendChild(btnAdd);
+                const MIN_WIDTH = 260;
 
-                const MIN_WIDTH = 420;
-                const ROW_HEIGHT = 40;
+                const getMinHeight = () => {
+                    const numRows = _this.loraState ? _this.loraState.length : (_this.rowsContainer ? _this.rowsContainer.children.length : 0);
+                    const canvasTopH = 92;
+                    const domH = 64 + (numRows * 34);
+                    return canvasTopH + domH;
+                };
 
                 this.computeSize = function(out) {
-                    const numRows = _this.loraState ? _this.loraState.length : (_this.rowsContainer ? _this.rowsContainer.children.length : 0);
-                    const slotsCount = Math.max(
-                        _this.inputs ? _this.inputs.length : 3,
-                        _this.outputs ? _this.outputs.length : 3,
-                        1
-                    );
-                    const canvasTopH = 34 + (slotsCount * 22) + 28; // Title (~34px) + slots (3 * 22px) + injection_method widget (~28px)
-                    const staticHtmlH = 152; // Triggers box (~78px) + Toggle All bar (~20px) + Add button (~34px) + gaps/margins (~20px)
-                    const computedHeight = canvasTopH + staticHtmlH + (numRows * ROW_HEIGHT);
-                    return [MIN_WIDTH, computedHeight];
+                    return [MIN_WIDTH, getMinHeight()];
                 };
 
                 const originalOnResize = this.onResize;
                 this.onResize = function(size) {
+                    const minH = getMinHeight();
+                    if (size[0] < MIN_WIDTH) size[0] = MIN_WIDTH;
+                    if (size[1] < minH) size[1] = minH;
                     if (originalOnResize) originalOnResize.apply(this, arguments);
-                    const minSize = this.computeSize();
-                    if (size[1] < minSize[1]) size[1] = minSize[1];
-                    if (size[0] < minSize[0]) size[0] = minSize[0];
                 };
 
-                const forceResize = () => {
-                    const applySize = () => {
-                        const minSize = _this.computeSize();
-                        const currentW = Math.max(_this.size ? _this.size[0] : 0, MIN_WIDTH);
-                        _this.size[0] = currentW;
-                        _this.size[1] = minSize[1];
-                        if (_this.setSize) {
-                            _this.setSize([currentW, minSize[1]]);
-                        }
-                        app.graph.setDirtyCanvas(true, true);
-                    };
-                    applySize();
-                    setTimeout(applySize, 25);
+                let lastRowCount = -1;
+                const forceResize = (onlyIfRowsChanged = false) => {
+                    const numRows = _this.loraState ? _this.loraState.length : 0;
+                    const minH = getMinHeight();
+                    const currentW = Math.max(_this.size ? _this.size[0] : 420, MIN_WIDTH);
+                    let targetH = _this.size ? _this.size[1] : minH;
+
+                    if (!onlyIfRowsChanged || numRows !== lastRowCount || targetH < minH) {
+                        targetH = minH;
+                        lastRowCount = numRows;
+                    }
+
+                    _this.size = [currentW, targetH];
+                    app.graph.setDirtyCanvas(true, true);
                 };
+                this.forceResize = forceResize;
 
                 // --- NUEVA ARQUITECTURA DE DATOS REACTIVA ---
                 const syncWidget = () => {
@@ -381,6 +311,14 @@ app.registerExtension({
                         _this.properties.triggers = _this.nodeTriggers || "";
                     }
                     app.graph.setDirtyCanvas(true, false);
+                };
+
+                const moveLora = (fromIdx, toIdx) => {
+                    if (toIdx < 0 || toIdx >= _this.loraState.length) return;
+                    const item = _this.loraState.splice(fromIdx, 1)[0];
+                    _this.loraState.splice(toIdx, 0, item);
+                    syncWidget();
+                    _this.renderUI();
                 };
 
                 const checkToggleAll = () => {
@@ -402,63 +340,99 @@ app.registerExtension({
                     _this.renderUI();
                 });
 
+                const PASTEL_PALETTE = [
+                    { text: "#bae6fd", dirText: "#7dd3fc", bg: "rgba(125, 211, 252, 0.10)", border: "#38bdf8" }, // Sky Blue
+                    { text: "#a7f3d0", dirText: "#6ee7b7", bg: "rgba(110, 231, 183, 0.10)", border: "#34d399" }, // Mint Green
+                    { text: "#ddd6fe", dirText: "#c4b5fd", bg: "rgba(196, 181, 253, 0.10)", border: "#a78bfa" }, // Lavender
+                    { text: "#fde68a", dirText: "#fcd34d", bg: "rgba(252, 211, 77, 0.10)",  border: "#fbbf24" }, // Pastel Amber
+                    { text: "#fbcfe8", dirText: "#f9a8d4", bg: "rgba(249, 168, 212, 0.10)", border: "#f472b6" }, // Pastel Rose
+                    { text: "#a5f3fc", dirText: "#67e8f9", bg: "rgba(103, 232, 249, 0.10)", border: "#22d3ee" }, // Cyan / Aqua
+                    { text: "#fed7aa", dirText: "#fdba74", bg: "rgba(253, 186, 116, 0.10)", border: "#fb923c" }, // Peach / Apricot
+                    { text: "#d9f99d", dirText: "#bef264", bg: "rgba(190, 242, 100, 0.10)", border: "#a3e635" }, // Lime Pastel
+                    { text: "#f5d0fe", dirText: "#f0abfc", bg: "rgba(240, 171, 252, 0.10)", border: "#e879f9" }, // Lilac / Orchid
+                    { text: "#fecdd3", dirText: "#fda4af", bg: "rgba(253, 164, 175, 0.10)", border: "#fb7185" }, // Coral
+                    { text: "#c7d2fe", dirText: "#a5b4fc", bg: "rgba(165, 180, 252, 0.10)", border: "#818cf8" }, // Periwinkle
+                    { text: "#99f6e4", dirText: "#5eead4", bg: "rgba(94, 234, 212, 0.10)",  border: "#2dd4bf" }  // Teal
+                ];
+
+                const dirColorMap = new Map();
+
+                const formatLoraDisplayName = (name) => {
+                    if (!name) return "";
+                    return String(name).replace(/\.safetensors$/i, "");
+                };
+
+                const splitLoraPath = (rawName) => {
+                    const display = formatLoraDisplayName(rawName);
+                    const lastSlash = Math.max(display.lastIndexOf("/"), display.lastIndexOf("\\"));
+                    if (lastSlash === -1) {
+                        return { dir: "", dirKey: "", base: display, fullDisplay: display };
+                    }
+                    return {
+                        dir: display.slice(0, lastSlash + 1),
+                        dirKey: display.slice(0, lastSlash).replace(/\\/g, "/").toLowerCase(),
+                        base: display.slice(lastSlash + 1),
+                        fullDisplay: display
+                    };
+                };
+
+                const getDirectoryPalette = (rawName) => {
+                    const { dirKey } = splitLoraPath(rawName);
+                    if (!dirKey) return null;
+                    if (!dirColorMap.has(dirKey)) {
+                        const nextColor = PASTEL_PALETTE[dirColorMap.size % PASTEL_PALETTE.length];
+                        dirColorMap.set(dirKey, nextColor);
+                    }
+                    return dirColorMap.get(dirKey);
+                };
+
+                const applyInputPastelStyle = (inputEl, rawName) => {
+                    const palette = getDirectoryPalette(rawName);
+                    if (palette) {
+                        inputEl.style.color = palette.text;
+                        inputEl.style.borderLeft = `3px solid ${palette.border}`;
+                    } else {
+                        inputEl.style.color = "#ddd";
+                        inputEl.style.borderLeft = "1px solid #555";
+                    }
+                };
+
+                const renderLoraOptionContent = (optEl, rawName, isMissing = false) => {
+                    if (isMissing) {
+                        optEl.textContent = formatLoraDisplayName(rawName) + " (Missing/Pending)";
+                        return;
+                    }
+                    const { dir, base } = splitLoraPath(rawName);
+                    const palette = getDirectoryPalette(rawName);
+                    optEl.innerHTML = "";
+                    if (palette && dir) {
+                        optEl.style.backgroundColor = palette.bg;
+                        optEl.style.borderLeft = `3px solid ${palette.border}`;
+                        const dirSpan = document.createElement("span");
+                        dirSpan.style.cssText = `color: ${palette.dirText}; opacity: 0.85; font-weight: 600;`;
+                        dirSpan.textContent = dir;
+                        const baseSpan = document.createElement("span");
+                        baseSpan.style.cssText = `color: ${palette.text}; font-weight: 500;`;
+                        baseSpan.textContent = base;
+                        optEl.appendChild(dirSpan);
+                        optEl.appendChild(baseSpan);
+                    } else {
+                        optEl.style.borderLeft = "3px solid transparent";
+                        optEl.style.color = "#e2e8f0";
+                        optEl.textContent = base;
+                    }
+                };
+
                 this.fetchLoras = async function() {
                     try {
                         const res = await fetch("/academia/lora_list");
                         loraList = await res.json();
+                        dirColorMap.clear();
+                        loraList.forEach(loraName => getDirectoryPalette(loraName));
                         _this.renderUI();
                     } catch (e) {}
                 };
 
-                let hoverTimeout;
-                const handleTooltipEnter = (e, loraName) => {
-                    if (!loraName || loraName === "None" || loraName.includes("(Missing)")) return;
-                    
-                    hoverTimeout = setTimeout(async () => {
-                        let loraTooltip = document.getElementById("asd-lora-tooltip");
-                        if (!loraTooltip) return;
-
-                        loraTooltip.style.display = "block";
-                        loraTooltip.style.left = (e.clientX + 15) + "px";
-                        loraTooltip.style.top = (e.clientY + 15) + "px";
-
-                        if (window.loraMetadataCache && window.loraMetadataCache[loraName]) {
-                            loraTooltip.innerText = window.loraMetadataCache[loraName];
-                            return;
-                        }
-
-                        loraTooltip.innerText = "⏳ Loading metadata...";
-                        try {
-                            const res = await fetch("/academia/lora_info", {
-                                method: "POST", headers: {"Content-Type": "application/json"},
-                                body: JSON.stringify({name: loraName})
-                            });
-                            const jsonRes = await res.json();
-                            if(!window.loraMetadataCache) window.loraMetadataCache = {};
-                            window.loraMetadataCache[loraName] = jsonRes.info;
-                            
-                            if (loraTooltip.style.display === "block") {
-                                loraTooltip.innerText = jsonRes.info;
-                            }
-                        } catch(e) {
-                            loraTooltip.innerText = "❌ Error loading metadata.";
-                        }
-                    }, 400); 
-                };
-
-                const handleTooltipMove = (e) => {
-                    let loraTooltip = document.getElementById("asd-lora-tooltip");
-                    if(loraTooltip) {
-                        loraTooltip.style.left = (e.clientX + 15) + "px";
-                        loraTooltip.style.top = (e.clientY + 15) + "px";
-                    }
-                };
-
-                const handleTooltipLeave = () => {
-                    clearTimeout(hoverTimeout);
-                    let loraTooltip = document.getElementById("asd-lora-tooltip");
-                    if(loraTooltip) loraTooltip.style.display = "none";
-                };
 
                 this.renderUI = () => {
                     if (txtTriggers && txtTriggers.value !== (_this.nodeTriggers || "")) {
@@ -492,45 +466,69 @@ app.registerExtension({
                         inputSearch.type = "text";
                         inputSearch.className = "asd-search-input";
                         inputSearch.placeholder = "Type to search LoRA...";
-                        inputSearch.value = item.name || "";
+                        inputSearch.value = formatLoraDisplayName(item.name || "");
+                        applyInputPastelStyle(inputSearch, item.name || "");
 
                         const dropdownList = document.createElement("div");
                         dropdownList.className = "asd-search-list";
 
+                        let activeDropdownIndex = -1;
+                        let initialAssignedValue = item.name || "";
+
+                        const setSelectedLora = (rawLoraName) => {
+                            _this.loraState[idx].name = rawLoraName;
+                            inputSearch.value = formatLoraDisplayName(rawLoraName);
+                            applyInputPastelStyle(inputSearch, rawLoraName);
+                            syncWidget();
+                        };
+
+                        const updateActiveDropdownItem = (items, newIndex, applySelection = true) => {
+                            if (!items || items.length === 0) return;
+                            items.forEach(el => el.classList.remove("active"));
+                            activeDropdownIndex = ((newIndex % items.length) + items.length) % items.length;
+                            const activeEl = items[activeDropdownIndex];
+                            if (activeEl) {
+                                activeEl.classList.add("active");
+                                activeEl.scrollIntoView({ block: "nearest" });
+                                if (applySelection && activeEl.dataset.value) {
+                                    setSelectedLora(activeEl.dataset.value);
+                                }
+                            }
+                        };
+
                         const populateDropdown = (filterText) => {
                             dropdownList.innerHTML = "";
-                            const lowerFilter = filterText.toLowerCase();
+                            activeDropdownIndex = -1;
+                            const lowerFilter = formatLoraDisplayName(filterText).toLowerCase();
                             let matchCount = 0;
 
-                            const currentVal = inputSearch.value;
+                            const currentVal = _this.loraState[idx]?.name || "";
                             if (currentVal && !loraList.includes(currentVal) && currentVal !== "None") {
                                 const opt = document.createElement("div");
                                 opt.className = "asd-search-item missing";
-                                opt.innerText = currentVal + " (Missing/Pending)";
+                                opt.dataset.value = currentVal;
+                                renderLoraOptionContent(opt, currentVal, true);
                                 opt.addEventListener("mousedown", () => {
-                                    inputSearch.value = currentVal;
+                                    initialAssignedValue = currentVal;
                                     dropdownList.style.display = "none";
-                                    _this.loraState[idx].name = currentVal;
-                                    syncWidget();
+                                    setSelectedLora(currentVal);
                                 });
                                 dropdownList.appendChild(opt);
+                                matchCount++;
                             }
 
                             loraList.forEach(loraName => {
-                                if (loraName.toLowerCase().includes(lowerFilter)) {
+                                const displayLora = formatLoraDisplayName(loraName);
+                                if (displayLora.toLowerCase().includes(lowerFilter)) {
                                     const opt = document.createElement("div");
                                     opt.className = "asd-search-item";
-                                    opt.innerText = loraName;
-                                    
-                                    opt.addEventListener("mouseenter", (e) => handleTooltipEnter(e, loraName));
-                                    opt.addEventListener("mousemove", handleTooltipMove);
-                                    opt.addEventListener("mouseleave", handleTooltipLeave);
+                                    opt.dataset.value = loraName;
+                                    renderLoraOptionContent(opt, loraName, false);
 
                                     opt.addEventListener("mousedown", () => {
-                                        inputSearch.value = loraName;
+                                        initialAssignedValue = loraName;
                                         dropdownList.style.display = "none";
-                                        _this.loraState[idx].name = loraName;
-                                        syncWidget();
+                                        setSelectedLora(loraName);
                                     });
                                     dropdownList.appendChild(opt);
                                     matchCount++;
@@ -542,32 +540,84 @@ app.registerExtension({
                                 noRes.style.cssText = "padding: 6px 8px; color: #777; font-size: 11px; text-align: center;";
                                 noRes.innerText = "No matches found";
                                 dropdownList.appendChild(noRes);
+                            } else {
+                                const items = Array.from(dropdownList.querySelectorAll(".asd-search-item[data-value]"));
+                                const existingIdx = items.findIndex(el => el.dataset.value === currentVal);
+                                if (existingIdx !== -1) {
+                                    updateActiveDropdownItem(items, existingIdx, false);
+                                }
                             }
                         };
 
                         inputSearch.addEventListener("focus", () => {
+                            initialAssignedValue = _this.loraState[idx]?.name || "";
                             populateDropdown(""); 
                             dropdownList.style.display = "block";
                             row.style.zIndex = 2000; 
                         });
 
                         inputSearch.addEventListener("input", (e) => {
-                            populateDropdown(e.target.value);
+                            const typed = e.target.value;
+                            populateDropdown(typed);
                             dropdownList.style.display = "block";
-                            _this.loraState[idx].name = e.target.value;
+                            const matchedRaw = loraList.find(l => formatLoraDisplayName(l).toLowerCase() === typed.trim().toLowerCase());
+                            _this.loraState[idx].name = matchedRaw || typed;
+                            applyInputPastelStyle(inputSearch, _this.loraState[idx].name);
                             syncWidget();
+                        });
+
+                        inputSearch.addEventListener("keydown", (e) => {
+                            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                e.stopImmediatePropagation();
+
+                                if (dropdownList.style.display === "none") {
+                                    initialAssignedValue = _this.loraState[idx]?.name || "";
+                                    populateDropdown("");
+                                    dropdownList.style.display = "block";
+                                    row.style.zIndex = 2000;
+                                }
+
+                                const items = Array.from(dropdownList.querySelectorAll(".asd-search-item[data-value]"));
+                                if (items.length === 0) return;
+
+                                let nextIdx;
+                                if (activeDropdownIndex === -1) {
+                                    const currentIdx = items.findIndex(el => el.dataset.value === (_this.loraState[idx]?.name || ""));
+                                    if (currentIdx !== -1) {
+                                        nextIdx = e.key === "ArrowDown" ? currentIdx + 1 : currentIdx - 1;
+                                    } else {
+                                        nextIdx = e.key === "ArrowDown" ? 0 : items.length - 1;
+                                    }
+                                } else {
+                                    nextIdx = e.key === "ArrowDown" ? activeDropdownIndex + 1 : activeDropdownIndex - 1;
+                                }
+
+                                updateActiveDropdownItem(items, nextIdx, true);
+                            } else if (e.key === "Enter") {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                initialAssignedValue = _this.loraState[idx]?.name || "";
+                                dropdownList.style.display = "none";
+                                inputSearch.blur();
+                            } else if (e.key === "Escape") {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                e.stopImmediatePropagation();
+
+                                if (initialAssignedValue) {
+                                    setSelectedLora(initialAssignedValue);
+                                }
+                                dropdownList.style.display = "none";
+                                inputSearch.blur();
+                            }
                         });
 
                         inputSearch.addEventListener("blur", () => {
                             row.style.zIndex = 1000 - idx;
                             setTimeout(() => { dropdownList.style.display = "none"; }, 150);
                         });
-
-                        inputSearch.addEventListener("mouseenter", (e) => {
-                            if(dropdownList.style.display !== "block") handleTooltipEnter(e, inputSearch.value);
-                        });
-                        inputSearch.addEventListener("mousemove", handleTooltipMove);
-                        inputSearch.addEventListener("mouseleave", handleTooltipLeave);
 
                         searchContainer.appendChild(inputSearch);
                         searchContainer.appendChild(dropdownList);
@@ -613,7 +663,48 @@ app.registerExtension({
                             }
                         });
 
+                        inputStrength.addEventListener("focus", function() {
+                            this.style.background = "rgba(74, 110, 224, 0.4)";
+                            this.style.borderRadius = "3px";
+                            this.select();
+                        });
+
+                        inputStrength.addEventListener("keydown", function(e) {
+                            if (e.key === "Tab") {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                e.stopImmediatePropagation();
+
+                                const allRows = Array.from(_this.rowsContainer.children);
+                                const total = allRows.length;
+                                if (total > 0) {
+                                    const step = e.shiftKey ? -1 : 1;
+                                    for (let offset = 1; offset <= total; offset++) {
+                                        const candidateIdx = ((idx + offset * step) % total + total) % total;
+                                        const isCandidateEnabled = _this.loraState[candidateIdx]?.enabled !== false;
+                                        if (isCandidateEnabled) {
+                                            const targetInput = allRows[candidateIdx]?.querySelector(".lora-strength");
+                                            if (targetInput) {
+                                                targetInput.focus();
+                                                targetInput.select();
+                                            }
+                                            break;
+                                        }
+                                    }
+                                }
+                            } else if (e.key === "ArrowUp") {
+                                e.preventDefault();
+                                adjustValue(e.shiftKey ? 0.2 : 0.05);
+                            } else if (e.key === "ArrowDown") {
+                                e.preventDefault();
+                                adjustValue(e.shiftKey ? -0.2 : -0.05);
+                            } else if (e.key === "Enter") {
+                                this.blur();
+                            }
+                        });
+
                         inputStrength.addEventListener("blur", function() {
+                            this.style.background = "transparent";
                             let parsed = parseFloat(this.value);
                             if (isNaN(parsed)) parsed = 0.0;
                             this.value = parsed.toFixed(2);
@@ -645,45 +736,215 @@ app.registerExtension({
                             _this.renderUI();
                         });
 
+                        // Botones para reordenar arriba/abajo
+                        const orderContainer = document.createElement("div");
+                        orderContainer.style.cssText = "display: flex; flex-direction: column; justify-content: center; gap: 1px; margin: 0 1px;";
+
+                        const btnUp = document.createElement("button");
+                        btnUp.type = "button";
+                        btnUp.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M18 15l-6-6-6 6"/></svg>`;
+                        btnUp.title = "Subir (Move Up)";
+                        btnUp.style.cssText = `background: transparent; border: none; color: ${idx === 0 ? '#333' : '#777'}; cursor: ${idx === 0 ? 'default' : 'pointer'}; padding: 1px 2px; display: flex; align-items: center; justify-content: center; line-height: 1; transition: color 0.15s;`;
+                        if (idx > 0) {
+                            btnUp.onmouseover = () => btnUp.style.color = "#fff";
+                            btnUp.onmouseout = () => btnUp.style.color = "#777";
+                            btnUp.addEventListener("click", () => moveLora(idx, idx - 1));
+                        }
+
+                        const btnDown = document.createElement("button");
+                        btnDown.type = "button";
+                        btnDown.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>`;
+                        btnDown.title = "Bajar (Move Down)";
+                        const isLast = idx === _this.loraState.length - 1;
+                        btnDown.style.cssText = `background: transparent; border: none; color: ${isLast ? '#333' : '#777'}; cursor: ${isLast ? 'default' : 'pointer'}; padding: 1px 2px; display: flex; align-items: center; justify-content: center; line-height: 1; transition: color 0.15s;`;
+                        if (!isLast) {
+                            btnDown.onmouseover = () => btnDown.style.color = "#fff";
+                            btnDown.onmouseout = () => btnDown.style.color = "#777";
+                            btnDown.addEventListener("click", () => moveLora(idx, idx + 1));
+                        }
+
+                        orderContainer.appendChild(btnUp);
+                        orderContainer.appendChild(btnDown);
+
+                        // Click derecho sobre la fila para mostrar menú contextual (estilo Power Lora Loader rgthree)
+                        row.addEventListener("contextmenu", (e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            if (window.LiteGraph && window.LiteGraph.ContextMenu) {
+                                const canMoveUp = idx > 0;
+                                const canMoveDown = idx < _this.loraState.length - 1;
+                                new LiteGraph.ContextMenu([
+                                    {
+                                        content: "⬆️ Move Up",
+                                        disabled: !canMoveUp,
+                                        callback: () => moveLora(idx, idx - 1)
+                                    },
+                                    {
+                                        content: "⬇️ Move Down",
+                                        disabled: !canMoveDown,
+                                        callback: () => moveLora(idx, idx + 1)
+                                    },
+                                    null,
+                                    {
+                                        content: isEnabled ? "⚫ Desactivar" : "🟢 Activar",
+                                        callback: () => {
+                                            _this.loraState[idx].enabled = !isEnabled;
+                                            syncWidget();
+                                            _this.renderUI();
+                                        }
+                                    },
+                                    {
+                                        content: "🗑️ Remove",
+                                        callback: () => {
+                                            _this.loraState.splice(idx, 1);
+                                            syncWidget();
+                                            _this.renderUI();
+                                        }
+                                    }
+                                ], {
+                                    event: e,
+                                    title: item.name ? item.name.split(/[/\\]/).pop() : "LoRA Options"
+                                });
+                            }
+                        });
+
                         row.appendChild(labelToggle);
                         row.appendChild(searchContainer);
                         row.appendChild(strengthContainer);
+                        row.appendChild(orderContainer);
                         row.appendChild(btnDelete);
                         
                         _this.rowsContainer.appendChild(row);
                     });
 
                     checkToggleAll();
-                    forceResize();
+                    forceResize(true);
                 }; 
 
-                btnAdd.addEventListener("click", () => {
+                const addNewLora = (focusNewInput = false) => {
                     const defaultName = loraList.length > 0 ? loraList[0] : "";
                     _this.loraState.push({ enabled: true, name: defaultName, strength: 1.0 });
                     syncWidget();
                     _this.renderUI();
-                });
-                
-                btnRefresh.addEventListener("click", () => _this.fetchLoras());
+                    if (focusNewInput && _this.rowsContainer && _this.rowsContainer.lastElementChild) {
+                        const newSearchInput = _this.rowsContainer.lastElementChild.querySelector(".asd-search-input");
+                        if (newSearchInput) {
+                            setTimeout(() => {
+                                newSearchInput.focus();
+                                newSearchInput.select();
+                            }, 20);
+                        }
+                    }
+                };
 
-                container.addEventListener("mousedown", (e) => e.stopPropagation());
-                this.addDOMWidget("UI", "HTML", container);
+                btnAdd.addEventListener("click", () => addNewLora(false));
                 
-                if(!window.loraMetadataCache) window.loraMetadataCache = {};
-                let globalTooltip = document.getElementById("asd-lora-tooltip");
-                if (!globalTooltip) {
-                    globalTooltip = document.createElement("div");
-                    globalTooltip.id = "asd-lora-tooltip";
-                    globalTooltip.style.cssText = `
-                        position: fixed; background: rgba(20, 20, 20, 0.95); color: #fff; 
-                        border: 1px solid #555; padding: 10px; border-radius: 6px; 
-                        z-index: 999999; display: none; pointer-events: none; 
-                        font-family: monospace; font-size: 13px; line-height: 1.4;
-                        white-space: pre-wrap; max-width: 400px; box-shadow: 0 4px 10px rgba(0,0,0,0.6);
-                        backdrop-filter: blur(4px);
-                    `;
-                    document.body.appendChild(globalTooltip);
+                const triggerRefreshWithFeedback = async () => {
+                    const origText = "🔄 Refresh List";
+                    btnRefresh.innerText = "⏳ Refreshing...";
+                    btnRefresh.style.color = "#60a5fa";
+                    await _this.fetchLoras();
+                    btnRefresh.innerText = "✅ Refreshed!";
+                    btnRefresh.style.color = "#4ade80";
+                    setTimeout(() => {
+                        btnRefresh.innerText = origText;
+                        btnRefresh.style.color = "#888";
+                    }, 1200);
+                };
+
+                btnRefresh.addEventListener("click", () => triggerRefreshWithFeedback());
+
+                container.addEventListener("mousedown", (e) => {
+                    // Permitir que el clic pase al canvas de LiteGraph si el usuario arrastra cerca de la esquina inferior derecha (resize handle)
+                    const rect = container.getBoundingClientRect();
+                    if (rect.right - e.clientX <= 22 && rect.bottom - e.clientY <= 22) {
+                        return;
+                    }
+                    e.stopPropagation();
+                });
+
+                const domWidget = this.addDOMWidget("UI", "HTML", container);
+                if (domWidget) {
+                    domWidget.computeSize = function(width) {
+                        const numRows = _this.loraState ? _this.loraState.length : 0;
+                        return [MIN_WIDTH, 64 + (numRows * 34)];
+                    };
                 }
+                
+                const existingTooltip = document.getElementById("asd-lora-tooltip");
+                if (existingTooltip) {
+                    existingTooltip.remove();
+                }
+
+                // --- ACCESOS DIRECTOS DE TECLADO ---
+                const onKeyDownCapture = (e) => {
+                    if (!_this.graph) return;
+                    const isSelected =
+                        (app.canvas && app.canvas.selected_nodes && app.canvas.selected_nodes[_this.id]) ||
+                        container.contains(document.activeElement);
+                    if (!isSelected) return;
+
+                    // Cmd + N (o Ctrl + N) sin Shift: Agregar un nuevo LoRA bloqueando nueva ventana del navegador
+                    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key.toLowerCase() === "n" || e.code === "KeyN")) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        e.stopImmediatePropagation();
+                        addNewLora(true);
+                        return;
+                    }
+
+                    // Cmd + R (o Ctrl + R) sin Shift: Refrescar lista de LoRAs bloqueando la recarga del navegador
+                    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key.toLowerCase() === "r" || e.code === "KeyR")) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        e.stopImmediatePropagation();
+                        triggerRefreshWithFeedback();
+                        return;
+                    }
+
+                    // Option / Alt + número (1..9) enfoca el campo de fuerza del LoRA correspondiente
+                    if (e.altKey && !e.ctrlKey && !e.metaKey) {
+                        let digit = -1;
+                        if (e.code && e.code.startsWith("Digit")) {
+                            digit = parseInt(e.code.replace("Digit", ""));
+                        } else if (e.key >= "0" && e.key <= "9") {
+                            digit = parseInt(e.key);
+                        }
+
+                        if (digit >= 1 && digit <= 9) {
+                            const loraIdx = digit - 1;
+                            if (_this.rowsContainer && _this.rowsContainer.children[loraIdx]) {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                e.stopImmediatePropagation();
+
+                                const targetRow = _this.rowsContainer.children[loraIdx];
+                                const strengthInput = targetRow.querySelector(".lora-strength");
+                                if (strengthInput) {
+                                    strengthInput.focus();
+                                    strengthInput.select();
+                                }
+                            }
+                        } else if (digit === 0) {
+                            // Option + 0 enfoca la caja de trigger words
+                            e.preventDefault();
+                            e.stopPropagation();
+                            e.stopImmediatePropagation();
+                            if (txtTriggers) {
+                                txtTriggers.focus();
+                                txtTriggers.select();
+                            }
+                        }
+                    }
+                };
+
+                window.addEventListener("keydown", onKeyDownCapture, true);
+
+                const origOnRemoved = this.onRemoved;
+                this.onRemoved = function() {
+                    window.removeEventListener("keydown", onKeyDownCapture, true);
+                    if (origOnRemoved) origOnRemoved.apply(this, arguments);
+                };
 
                 // INICIALIZACIÓN
                 this.fetchLoras().then(() => {
@@ -703,6 +964,7 @@ app.registerExtension({
                         } catch (e) {}
                     }
                     _this.renderUI();
+                    if (_this.forceResize) _this.forceResize();
                 });
             };
         }
