@@ -118,7 +118,7 @@ class AcademiaMultiLoraNode:
     FUNCTION = "apply_loras"
     CATEGORY = "Academia SD"
 
-    def apply_loras(self, model, injection_method, lora_data="[]", clip=None, text="", **kwargs):
+    def apply_loras(self, model, injection_method="Standard (Native)", lora_data="[]", clip=None, text="", **kwargs):
         try:
             data = json.loads(lora_data)
         except:

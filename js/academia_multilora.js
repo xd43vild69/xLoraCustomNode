@@ -87,6 +87,10 @@ app.registerExtension({
             const onConfigure = nodeType.prototype.onConfigure;
             nodeType.prototype.onConfigure = function(o) {
                 if (onConfigure) onConfigure.apply(this, arguments);
+                const injectionWidget = this.widgets?.find(w => w.name === "injection_method");
+                if (injectionWidget) {
+                    injectionWidget.value = "Standard (Native)";
+                }
                 const dataWidget = this.widgets.find(w => w.name === "lora_data");
                 if (dataWidget && dataWidget.value) {
                     try {
@@ -111,6 +115,15 @@ app.registerExtension({
                 if (onNodeCreated) onNodeCreated.apply(this, arguments);
 
                 const _this = this;
+
+                const injectionWidget = this.widgets.find(w => w.name === "injection_method");
+                if (injectionWidget) {
+                    injectionWidget.value = "Standard (Native)";
+                    injectionWidget.type = "hidden";
+                    injectionWidget.computeSize = () => [0, -4];
+                    injectionWidget.draw = function() {};
+                    injectionWidget.serializeValue = () => "Standard (Native)";
+                }
 
                 const dataWidget = this.widgets.find(w => w.name === "lora_data");
                 if (dataWidget) {
@@ -157,7 +170,7 @@ app.registerExtension({
                     .asd-search-list { position: absolute; top: 100%; left: 0; right: 0; background: #222; border: 1px solid #555; border-radius: 4px; max-height: 200px; overflow-y: auto; z-index: 9999; display: none; box-shadow: 0 4px 10px rgba(0,0,0,0.6); margin-top: 2px;}
                     .asd-search-item { padding: 6px 8px; cursor: pointer; color: #ddd; font-size: 11px; word-break: break-all; border-bottom: 1px solid #333;}
                     .asd-search-item:last-child { border-bottom: none; }
-                    .asd-search-item:hover { background: #4a6ee0; color: #fff; }
+                    .asd-search-item:hover, .asd-search-item.active { background: rgba(74, 110, 224, 0.45) !important; color: #fff !important; box-shadow: inset 0 0 0 1px rgba(125, 211, 252, 0.5); }
                     .asd-search-item.missing { color: #ff4444; font-weight: bold; }
 
                     .asd-step-btn { background: transparent; border: none; color: #888; font-size: 14px; font-weight: bold; cursor: pointer; padding: 0 4px; transition: color 0.2s; user-select: none; }
@@ -213,12 +226,33 @@ app.registerExtension({
                 toggleAllContainer.appendChild(labelToggleAll);
                 toggleAllContainer.appendChild(textToggleAll);
 
+                const topActionsContainer = document.createElement("div");
+                topActionsContainer.style.cssText = "display: flex; align-items: center; gap: 6px;";
+
                 const btnRefresh = document.createElement("button");
                 btnRefresh.innerText = "🔄 Refresh List";
-                btnRefresh.style.cssText = "cursor: pointer; background: transparent; color: #888; border: none; font-size: 10px;";
-                
+                btnRefresh.style.cssText = "cursor: pointer; background: transparent; color: #888; border: none; font-size: 10px; padding: 2px 4px; transition: color 0.15s;";
+                btnRefresh.onmouseover = () => { if (btnRefresh.innerText.includes("Refresh")) btnRefresh.style.color = "#ccc"; };
+                btnRefresh.onmouseout = () => { if (btnRefresh.innerText.includes("Refresh")) btnRefresh.style.color = "#888"; };
+
+                const btnAdd = document.createElement("button");
+                btnAdd.innerText = "➕ Add";
+                btnAdd.title = "Add LoRA (Cmd+N)";
+                btnAdd.style.cssText = "cursor: pointer; padding: 2px 7px; background: rgba(74, 110, 224, 0.2); color: #93c5fd; border: 1px solid rgba(74, 110, 224, 0.45); border-radius: 4px; font-weight: 600; font-size: 10px; transition: all 0.15s;";
+                btnAdd.onmouseover = () => {
+                    btnAdd.style.background = "rgba(74, 110, 224, 0.38)";
+                    btnAdd.style.color = "#fff";
+                };
+                btnAdd.onmouseout = () => {
+                    btnAdd.style.background = "rgba(74, 110, 224, 0.2)";
+                    btnAdd.style.color = "#93c5fd";
+                };
+
+                topActionsContainer.appendChild(btnRefresh);
+                topActionsContainer.appendChild(btnAdd);
+
                 topBar.appendChild(toggleAllContainer);
-                topBar.appendChild(btnRefresh);
+                topBar.appendChild(topActionsContainer);
                 container.appendChild(topBar);
 
                 this.rowsContainer = document.createElement("div");
@@ -227,45 +261,41 @@ app.registerExtension({
                 this.rowsContainer.style.gap = "4px"; 
                 container.appendChild(this.rowsContainer);
 
-                const btnAdd = document.createElement("button");
-                btnAdd.innerText = "➕ Add Lora";
-                btnAdd.style.cssText = "cursor: pointer; padding: 6px; background: rgba(255,255,255,0.05); color: #aaa; border: 1px solid #444; border-radius: 6px; font-weight: bold; margin-top: 4px; font-size: 11px; transition: background 0.2s;";
-                btnAdd.onmouseover = () => btnAdd.style.background = "rgba(255,255,255,0.1)";
-                btnAdd.onmouseout = () => btnAdd.style.background = "rgba(255,255,255,0.05)";
-                container.appendChild(btnAdd);
+                const MIN_WIDTH = 260;
 
-                const MIN_WIDTH = 420;
+                const getMinHeight = () => {
+                    const numRows = _this.loraState ? _this.loraState.length : (_this.rowsContainer ? _this.rowsContainer.children.length : 0);
+                    const canvasTopH = 92;
+                    const domH = 64 + (numRows * 34);
+                    return canvasTopH + domH;
+                };
 
                 this.computeSize = function(out) {
-                    const numRows = _this.loraState ? _this.loraState.length : (_this.rowsContainer ? _this.rowsContainer.children.length : 0);
-                    // Encabezado del canvas: título (30) + 3 slots (66) + injection_method (28) = ~124px
-                    const canvasTopH = 124;
-                    // Contenido HTML: input 1 línea (26+6) + topBar (22+6) + rows (numRows * 34) + btnAdd (30+4) + padding (6) = 100 + (numRows * 34)px
-                    const domH = 100 + (numRows * 34);
-                    const currentW = Math.max(_this.size ? _this.size[0] : 0, MIN_WIDTH);
-                    return [currentW, canvasTopH + domH];
+                    return [MIN_WIDTH, getMinHeight()];
                 };
 
                 const originalOnResize = this.onResize;
                 this.onResize = function(size) {
+                    const minH = getMinHeight();
+                    if (size[0] < MIN_WIDTH) size[0] = MIN_WIDTH;
+                    if (size[1] < minH) size[1] = minH;
                     if (originalOnResize) originalOnResize.apply(this, arguments);
-                    const minSize = this.computeSize();
-                    if (size[0] < minSize[0]) size[0] = minSize[0];
-                    if (size[1] < minSize[1]) size[1] = minSize[1];
                 };
 
-                const forceResize = () => {
-                    const applySize = () => {
-                        const minSize = _this.computeSize();
-                        const currentW = Math.max(_this.size ? _this.size[0] : 0, MIN_WIDTH);
-                        _this.size = [currentW, minSize[1]];
-                        if (typeof _this.setSize === "function") {
-                            _this.setSize([currentW, minSize[1]]);
-                        }
-                        app.graph.setDirtyCanvas(true, true);
-                    };
-                    applySize();
-                    setTimeout(applySize, 30);
+                let lastRowCount = -1;
+                const forceResize = (onlyIfRowsChanged = false) => {
+                    const numRows = _this.loraState ? _this.loraState.length : 0;
+                    const minH = getMinHeight();
+                    const currentW = Math.max(_this.size ? _this.size[0] : 420, MIN_WIDTH);
+                    let targetH = _this.size ? _this.size[1] : minH;
+
+                    if (!onlyIfRowsChanged || numRows !== lastRowCount || targetH < minH) {
+                        targetH = minH;
+                        lastRowCount = numRows;
+                    }
+
+                    _this.size = [currentW, targetH];
+                    app.graph.setDirtyCanvas(true, true);
                 };
                 this.forceResize = forceResize;
 
@@ -310,63 +340,99 @@ app.registerExtension({
                     _this.renderUI();
                 });
 
+                const PASTEL_PALETTE = [
+                    { text: "#bae6fd", dirText: "#7dd3fc", bg: "rgba(125, 211, 252, 0.10)", border: "#38bdf8" }, // Sky Blue
+                    { text: "#a7f3d0", dirText: "#6ee7b7", bg: "rgba(110, 231, 183, 0.10)", border: "#34d399" }, // Mint Green
+                    { text: "#ddd6fe", dirText: "#c4b5fd", bg: "rgba(196, 181, 253, 0.10)", border: "#a78bfa" }, // Lavender
+                    { text: "#fde68a", dirText: "#fcd34d", bg: "rgba(252, 211, 77, 0.10)",  border: "#fbbf24" }, // Pastel Amber
+                    { text: "#fbcfe8", dirText: "#f9a8d4", bg: "rgba(249, 168, 212, 0.10)", border: "#f472b6" }, // Pastel Rose
+                    { text: "#a5f3fc", dirText: "#67e8f9", bg: "rgba(103, 232, 249, 0.10)", border: "#22d3ee" }, // Cyan / Aqua
+                    { text: "#fed7aa", dirText: "#fdba74", bg: "rgba(253, 186, 116, 0.10)", border: "#fb923c" }, // Peach / Apricot
+                    { text: "#d9f99d", dirText: "#bef264", bg: "rgba(190, 242, 100, 0.10)", border: "#a3e635" }, // Lime Pastel
+                    { text: "#f5d0fe", dirText: "#f0abfc", bg: "rgba(240, 171, 252, 0.10)", border: "#e879f9" }, // Lilac / Orchid
+                    { text: "#fecdd3", dirText: "#fda4af", bg: "rgba(253, 164, 175, 0.10)", border: "#fb7185" }, // Coral
+                    { text: "#c7d2fe", dirText: "#a5b4fc", bg: "rgba(165, 180, 252, 0.10)", border: "#818cf8" }, // Periwinkle
+                    { text: "#99f6e4", dirText: "#5eead4", bg: "rgba(94, 234, 212, 0.10)",  border: "#2dd4bf" }  // Teal
+                ];
+
+                const dirColorMap = new Map();
+
+                const formatLoraDisplayName = (name) => {
+                    if (!name) return "";
+                    return String(name).replace(/\.safetensors$/i, "");
+                };
+
+                const splitLoraPath = (rawName) => {
+                    const display = formatLoraDisplayName(rawName);
+                    const lastSlash = Math.max(display.lastIndexOf("/"), display.lastIndexOf("\\"));
+                    if (lastSlash === -1) {
+                        return { dir: "", dirKey: "", base: display, fullDisplay: display };
+                    }
+                    return {
+                        dir: display.slice(0, lastSlash + 1),
+                        dirKey: display.slice(0, lastSlash).replace(/\\/g, "/").toLowerCase(),
+                        base: display.slice(lastSlash + 1),
+                        fullDisplay: display
+                    };
+                };
+
+                const getDirectoryPalette = (rawName) => {
+                    const { dirKey } = splitLoraPath(rawName);
+                    if (!dirKey) return null;
+                    if (!dirColorMap.has(dirKey)) {
+                        const nextColor = PASTEL_PALETTE[dirColorMap.size % PASTEL_PALETTE.length];
+                        dirColorMap.set(dirKey, nextColor);
+                    }
+                    return dirColorMap.get(dirKey);
+                };
+
+                const applyInputPastelStyle = (inputEl, rawName) => {
+                    const palette = getDirectoryPalette(rawName);
+                    if (palette) {
+                        inputEl.style.color = palette.text;
+                        inputEl.style.borderLeft = `3px solid ${palette.border}`;
+                    } else {
+                        inputEl.style.color = "#ddd";
+                        inputEl.style.borderLeft = "1px solid #555";
+                    }
+                };
+
+                const renderLoraOptionContent = (optEl, rawName, isMissing = false) => {
+                    if (isMissing) {
+                        optEl.textContent = formatLoraDisplayName(rawName) + " (Missing/Pending)";
+                        return;
+                    }
+                    const { dir, base } = splitLoraPath(rawName);
+                    const palette = getDirectoryPalette(rawName);
+                    optEl.innerHTML = "";
+                    if (palette && dir) {
+                        optEl.style.backgroundColor = palette.bg;
+                        optEl.style.borderLeft = `3px solid ${palette.border}`;
+                        const dirSpan = document.createElement("span");
+                        dirSpan.style.cssText = `color: ${palette.dirText}; opacity: 0.85; font-weight: 600;`;
+                        dirSpan.textContent = dir;
+                        const baseSpan = document.createElement("span");
+                        baseSpan.style.cssText = `color: ${palette.text}; font-weight: 500;`;
+                        baseSpan.textContent = base;
+                        optEl.appendChild(dirSpan);
+                        optEl.appendChild(baseSpan);
+                    } else {
+                        optEl.style.borderLeft = "3px solid transparent";
+                        optEl.style.color = "#e2e8f0";
+                        optEl.textContent = base;
+                    }
+                };
+
                 this.fetchLoras = async function() {
                     try {
                         const res = await fetch("/academia/lora_list");
                         loraList = await res.json();
+                        dirColorMap.clear();
+                        loraList.forEach(loraName => getDirectoryPalette(loraName));
                         _this.renderUI();
                     } catch (e) {}
                 };
 
-                let hoverTimeout;
-                const handleTooltipEnter = (e, loraName) => {
-                    if (!loraName || loraName === "None" || loraName.includes("(Missing)")) return;
-                    
-                    hoverTimeout = setTimeout(async () => {
-                        let loraTooltip = document.getElementById("asd-lora-tooltip");
-                        if (!loraTooltip) return;
-
-                        loraTooltip.style.display = "block";
-                        loraTooltip.style.left = (e.clientX + 15) + "px";
-                        loraTooltip.style.top = (e.clientY + 15) + "px";
-
-                        if (window.loraMetadataCache && window.loraMetadataCache[loraName]) {
-                            loraTooltip.innerText = window.loraMetadataCache[loraName];
-                            return;
-                        }
-
-                        loraTooltip.innerText = "⏳ Loading metadata...";
-                        try {
-                            const res = await fetch("/academia/lora_info", {
-                                method: "POST", headers: {"Content-Type": "application/json"},
-                                body: JSON.stringify({name: loraName})
-                            });
-                            const jsonRes = await res.json();
-                            if(!window.loraMetadataCache) window.loraMetadataCache = {};
-                            window.loraMetadataCache[loraName] = jsonRes.info;
-                            
-                            if (loraTooltip.style.display === "block") {
-                                loraTooltip.innerText = jsonRes.info;
-                            }
-                        } catch(e) {
-                            loraTooltip.innerText = "❌ Error loading metadata.";
-                        }
-                    }, 400); 
-                };
-
-                const handleTooltipMove = (e) => {
-                    let loraTooltip = document.getElementById("asd-lora-tooltip");
-                    if(loraTooltip) {
-                        loraTooltip.style.left = (e.clientX + 15) + "px";
-                        loraTooltip.style.top = (e.clientY + 15) + "px";
-                    }
-                };
-
-                const handleTooltipLeave = () => {
-                    clearTimeout(hoverTimeout);
-                    let loraTooltip = document.getElementById("asd-lora-tooltip");
-                    if(loraTooltip) loraTooltip.style.display = "none";
-                };
 
                 this.renderUI = () => {
                     if (txtTriggers && txtTriggers.value !== (_this.nodeTriggers || "")) {
@@ -400,45 +466,69 @@ app.registerExtension({
                         inputSearch.type = "text";
                         inputSearch.className = "asd-search-input";
                         inputSearch.placeholder = "Type to search LoRA...";
-                        inputSearch.value = item.name || "";
+                        inputSearch.value = formatLoraDisplayName(item.name || "");
+                        applyInputPastelStyle(inputSearch, item.name || "");
 
                         const dropdownList = document.createElement("div");
                         dropdownList.className = "asd-search-list";
 
+                        let activeDropdownIndex = -1;
+                        let initialAssignedValue = item.name || "";
+
+                        const setSelectedLora = (rawLoraName) => {
+                            _this.loraState[idx].name = rawLoraName;
+                            inputSearch.value = formatLoraDisplayName(rawLoraName);
+                            applyInputPastelStyle(inputSearch, rawLoraName);
+                            syncWidget();
+                        };
+
+                        const updateActiveDropdownItem = (items, newIndex, applySelection = true) => {
+                            if (!items || items.length === 0) return;
+                            items.forEach(el => el.classList.remove("active"));
+                            activeDropdownIndex = ((newIndex % items.length) + items.length) % items.length;
+                            const activeEl = items[activeDropdownIndex];
+                            if (activeEl) {
+                                activeEl.classList.add("active");
+                                activeEl.scrollIntoView({ block: "nearest" });
+                                if (applySelection && activeEl.dataset.value) {
+                                    setSelectedLora(activeEl.dataset.value);
+                                }
+                            }
+                        };
+
                         const populateDropdown = (filterText) => {
                             dropdownList.innerHTML = "";
-                            const lowerFilter = filterText.toLowerCase();
+                            activeDropdownIndex = -1;
+                            const lowerFilter = formatLoraDisplayName(filterText).toLowerCase();
                             let matchCount = 0;
 
-                            const currentVal = inputSearch.value;
+                            const currentVal = _this.loraState[idx]?.name || "";
                             if (currentVal && !loraList.includes(currentVal) && currentVal !== "None") {
                                 const opt = document.createElement("div");
                                 opt.className = "asd-search-item missing";
-                                opt.innerText = currentVal + " (Missing/Pending)";
+                                opt.dataset.value = currentVal;
+                                renderLoraOptionContent(opt, currentVal, true);
                                 opt.addEventListener("mousedown", () => {
-                                    inputSearch.value = currentVal;
+                                    initialAssignedValue = currentVal;
                                     dropdownList.style.display = "none";
-                                    _this.loraState[idx].name = currentVal;
-                                    syncWidget();
+                                    setSelectedLora(currentVal);
                                 });
                                 dropdownList.appendChild(opt);
+                                matchCount++;
                             }
 
                             loraList.forEach(loraName => {
-                                if (loraName.toLowerCase().includes(lowerFilter)) {
+                                const displayLora = formatLoraDisplayName(loraName);
+                                if (displayLora.toLowerCase().includes(lowerFilter)) {
                                     const opt = document.createElement("div");
                                     opt.className = "asd-search-item";
-                                    opt.innerText = loraName;
-                                    
-                                    opt.addEventListener("mouseenter", (e) => handleTooltipEnter(e, loraName));
-                                    opt.addEventListener("mousemove", handleTooltipMove);
-                                    opt.addEventListener("mouseleave", handleTooltipLeave);
+                                    opt.dataset.value = loraName;
+                                    renderLoraOptionContent(opt, loraName, false);
 
                                     opt.addEventListener("mousedown", () => {
-                                        inputSearch.value = loraName;
+                                        initialAssignedValue = loraName;
                                         dropdownList.style.display = "none";
-                                        _this.loraState[idx].name = loraName;
-                                        syncWidget();
+                                        setSelectedLora(loraName);
                                     });
                                     dropdownList.appendChild(opt);
                                     matchCount++;
@@ -450,32 +540,84 @@ app.registerExtension({
                                 noRes.style.cssText = "padding: 6px 8px; color: #777; font-size: 11px; text-align: center;";
                                 noRes.innerText = "No matches found";
                                 dropdownList.appendChild(noRes);
+                            } else {
+                                const items = Array.from(dropdownList.querySelectorAll(".asd-search-item[data-value]"));
+                                const existingIdx = items.findIndex(el => el.dataset.value === currentVal);
+                                if (existingIdx !== -1) {
+                                    updateActiveDropdownItem(items, existingIdx, false);
+                                }
                             }
                         };
 
                         inputSearch.addEventListener("focus", () => {
+                            initialAssignedValue = _this.loraState[idx]?.name || "";
                             populateDropdown(""); 
                             dropdownList.style.display = "block";
                             row.style.zIndex = 2000; 
                         });
 
                         inputSearch.addEventListener("input", (e) => {
-                            populateDropdown(e.target.value);
+                            const typed = e.target.value;
+                            populateDropdown(typed);
                             dropdownList.style.display = "block";
-                            _this.loraState[idx].name = e.target.value;
+                            const matchedRaw = loraList.find(l => formatLoraDisplayName(l).toLowerCase() === typed.trim().toLowerCase());
+                            _this.loraState[idx].name = matchedRaw || typed;
+                            applyInputPastelStyle(inputSearch, _this.loraState[idx].name);
                             syncWidget();
+                        });
+
+                        inputSearch.addEventListener("keydown", (e) => {
+                            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                e.stopImmediatePropagation();
+
+                                if (dropdownList.style.display === "none") {
+                                    initialAssignedValue = _this.loraState[idx]?.name || "";
+                                    populateDropdown("");
+                                    dropdownList.style.display = "block";
+                                    row.style.zIndex = 2000;
+                                }
+
+                                const items = Array.from(dropdownList.querySelectorAll(".asd-search-item[data-value]"));
+                                if (items.length === 0) return;
+
+                                let nextIdx;
+                                if (activeDropdownIndex === -1) {
+                                    const currentIdx = items.findIndex(el => el.dataset.value === (_this.loraState[idx]?.name || ""));
+                                    if (currentIdx !== -1) {
+                                        nextIdx = e.key === "ArrowDown" ? currentIdx + 1 : currentIdx - 1;
+                                    } else {
+                                        nextIdx = e.key === "ArrowDown" ? 0 : items.length - 1;
+                                    }
+                                } else {
+                                    nextIdx = e.key === "ArrowDown" ? activeDropdownIndex + 1 : activeDropdownIndex - 1;
+                                }
+
+                                updateActiveDropdownItem(items, nextIdx, true);
+                            } else if (e.key === "Enter") {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                initialAssignedValue = _this.loraState[idx]?.name || "";
+                                dropdownList.style.display = "none";
+                                inputSearch.blur();
+                            } else if (e.key === "Escape") {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                e.stopImmediatePropagation();
+
+                                if (initialAssignedValue) {
+                                    setSelectedLora(initialAssignedValue);
+                                }
+                                dropdownList.style.display = "none";
+                                inputSearch.blur();
+                            }
                         });
 
                         inputSearch.addEventListener("blur", () => {
                             row.style.zIndex = 1000 - idx;
                             setTimeout(() => { dropdownList.style.display = "none"; }, 150);
                         });
-
-                        inputSearch.addEventListener("mouseenter", (e) => {
-                            if(dropdownList.style.display !== "block") handleTooltipEnter(e, inputSearch.value);
-                        });
-                        inputSearch.addEventListener("mousemove", handleTooltipMove);
-                        inputSearch.addEventListener("mouseleave", handleTooltipLeave);
 
                         searchContainer.appendChild(inputSearch);
                         searchContainer.appendChild(dropdownList);
@@ -528,7 +670,29 @@ app.registerExtension({
                         });
 
                         inputStrength.addEventListener("keydown", function(e) {
-                            if (e.key === "ArrowUp") {
+                            if (e.key === "Tab") {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                e.stopImmediatePropagation();
+
+                                const allRows = Array.from(_this.rowsContainer.children);
+                                const total = allRows.length;
+                                if (total > 0) {
+                                    const step = e.shiftKey ? -1 : 1;
+                                    for (let offset = 1; offset <= total; offset++) {
+                                        const candidateIdx = ((idx + offset * step) % total + total) % total;
+                                        const isCandidateEnabled = _this.loraState[candidateIdx]?.enabled !== false;
+                                        if (isCandidateEnabled) {
+                                            const targetInput = allRows[candidateIdx]?.querySelector(".lora-strength");
+                                            if (targetInput) {
+                                                targetInput.focus();
+                                                targetInput.select();
+                                            }
+                                            break;
+                                        }
+                                    }
+                                }
+                            } else if (e.key === "ArrowUp") {
                                 e.preventDefault();
                                 adjustValue(e.shiftKey ? 0.2 : 0.05);
                             } else if (e.key === "ArrowDown") {
@@ -654,42 +818,89 @@ app.registerExtension({
                     });
 
                     checkToggleAll();
-                    forceResize();
+                    forceResize(true);
                 }; 
 
-                btnAdd.addEventListener("click", () => {
+                const addNewLora = (focusNewInput = false) => {
                     const defaultName = loraList.length > 0 ? loraList[0] : "";
                     _this.loraState.push({ enabled: true, name: defaultName, strength: 1.0 });
                     syncWidget();
                     _this.renderUI();
-                });
-                
-                btnRefresh.addEventListener("click", () => _this.fetchLoras());
+                    if (focusNewInput && _this.rowsContainer && _this.rowsContainer.lastElementChild) {
+                        const newSearchInput = _this.rowsContainer.lastElementChild.querySelector(".asd-search-input");
+                        if (newSearchInput) {
+                            setTimeout(() => {
+                                newSearchInput.focus();
+                                newSearchInput.select();
+                            }, 20);
+                        }
+                    }
+                };
 
-                container.addEventListener("mousedown", (e) => e.stopPropagation());
-                this.addDOMWidget("UI", "HTML", container);
+                btnAdd.addEventListener("click", () => addNewLora(false));
                 
-                if(!window.loraMetadataCache) window.loraMetadataCache = {};
-                let globalTooltip = document.getElementById("asd-lora-tooltip");
-                if (!globalTooltip) {
-                    globalTooltip = document.createElement("div");
-                    globalTooltip.id = "asd-lora-tooltip";
-                    globalTooltip.style.cssText = `
-                        position: fixed; background: rgba(20, 20, 20, 0.95); color: #fff; 
-                        border: 1px solid #555; padding: 10px; border-radius: 6px; 
-                        z-index: 999999; display: none; pointer-events: none; 
-                        font-family: monospace; font-size: 13px; line-height: 1.4;
-                        white-space: pre-wrap; max-width: 400px; box-shadow: 0 4px 10px rgba(0,0,0,0.6);
-                        backdrop-filter: blur(4px);
-                    `;
-                    document.body.appendChild(globalTooltip);
+                const triggerRefreshWithFeedback = async () => {
+                    const origText = "🔄 Refresh List";
+                    btnRefresh.innerText = "⏳ Refreshing...";
+                    btnRefresh.style.color = "#60a5fa";
+                    await _this.fetchLoras();
+                    btnRefresh.innerText = "✅ Refreshed!";
+                    btnRefresh.style.color = "#4ade80";
+                    setTimeout(() => {
+                        btnRefresh.innerText = origText;
+                        btnRefresh.style.color = "#888";
+                    }, 1200);
+                };
+
+                btnRefresh.addEventListener("click", () => triggerRefreshWithFeedback());
+
+                container.addEventListener("mousedown", (e) => {
+                    // Permitir que el clic pase al canvas de LiteGraph si el usuario arrastra cerca de la esquina inferior derecha (resize handle)
+                    const rect = container.getBoundingClientRect();
+                    if (rect.right - e.clientX <= 22 && rect.bottom - e.clientY <= 22) {
+                        return;
+                    }
+                    e.stopPropagation();
+                });
+
+                const domWidget = this.addDOMWidget("UI", "HTML", container);
+                if (domWidget) {
+                    domWidget.computeSize = function(width) {
+                        const numRows = _this.loraState ? _this.loraState.length : 0;
+                        return [MIN_WIDTH, 64 + (numRows * 34)];
+                    };
+                }
+                
+                const existingTooltip = document.getElementById("asd-lora-tooltip");
+                if (existingTooltip) {
+                    existingTooltip.remove();
                 }
 
                 // --- ACCESOS DIRECTOS DE TECLADO ---
                 const onKeyDownCapture = (e) => {
                     if (!_this.graph) return;
-                    const isSelected = app.canvas && app.canvas.selected_nodes && app.canvas.selected_nodes[_this.id];
+                    const isSelected =
+                        (app.canvas && app.canvas.selected_nodes && app.canvas.selected_nodes[_this.id]) ||
+                        container.contains(document.activeElement);
                     if (!isSelected) return;
+
+                    // Cmd + N (o Ctrl + N) sin Shift: Agregar un nuevo LoRA bloqueando nueva ventana del navegador
+                    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key.toLowerCase() === "n" || e.code === "KeyN")) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        e.stopImmediatePropagation();
+                        addNewLora(true);
+                        return;
+                    }
+
+                    // Cmd + R (o Ctrl + R) sin Shift: Refrescar lista de LoRAs bloqueando la recarga del navegador
+                    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key.toLowerCase() === "r" || e.code === "KeyR")) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        e.stopImmediatePropagation();
+                        triggerRefreshWithFeedback();
+                        return;
+                    }
 
                     // Option / Alt + número (1..9) enfoca el campo de fuerza del LoRA correspondiente
                     if (e.altKey && !e.ctrlKey && !e.metaKey) {
